@@ -17,6 +17,7 @@
 
 <div id="hud" class="hidden">
   <div class="hud-block" id="diffHudBlock">🎯 <span class="hud-value" id="diffVal">Normal</span></div>
+  <div class="hud-block hidden" id="specialRoomHudBlock"><span class="hud-value" id="specialRoomVal"></span></div>
   <div class="hud-block">💯 <span class="hud-label">Score</span> <span class="hud-value" id="scoreVal">0</span></div>
   <div class="hud-block">🚪 <span class="hud-label">Salle</span> <span class="hud-value" id="roomVal">1</span></div>
   <div class="hud-block">🏆 <span class="hud-label">Record</span> <span class="hud-value" id="bestVal">0</span></div>
@@ -114,6 +115,7 @@
 <div id="mutOverlay" class="overlayBase hidden">
   <div class="panel">
     <h2>🧬 Salle franchie !</h2>
+    <div id="specialRoomBanner" class="hidden"></div>
     <p>Choisis une mutation pour la suite du run :</p>
     <div class="mutChoices" id="mutChoices"></div>
   </div>
