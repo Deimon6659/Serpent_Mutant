@@ -59,7 +59,82 @@
   }
 
   let save = loadSave();
+// ============================================================
+// Musique de fond
+// ============================================================
+const MUSIC_TRACKS = {
+  classic: 'audio/theme-classic.mp3',
+  ice: 'audio/theme-ice.mp3',
+  volcano: 'audio/theme-volcano.mp3'
+};
 
+let currentAudio = null;
+let musicEnabled = true; // pourra être relié à un bouton mute plus tard
+
+function stopMusic() {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio = null;
+  }
+}
+
+function playMusic(trackKey, { reversed = false } = {}) {
+  if (!musicEnabled) return;
+  stopMusic();
+
+  const src = MUSIC_TRACKS[trackKey];
+  if (!src) return;
+
+  if (reversed) {
+    playReversedTrack(src);
+    return;
+  }
+
+  const audio = new Audio(src);
+  audio.loop = true;
+  audio.volume = 0.4;
+  audio.play().catch(() => {
+    // Lecture bloquée par le navigateur tant qu'aucune interaction utilisateur
+    // n'a eu lieu sur la page - se reproduira au prochain clic/touche.
+  });
+  currentAudio = audio;
+}
+
+// Lecture à l'envers via Web Audio API (pour le niveau Miroir)
+let reversedBufferCache = {};
+async function playReversedTrack(src) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContextClass();
+
+    let buffer = reversedBufferCache[src];
+    if (!buffer) {
+      const response = await fetch(src);
+      const arrayBuffer = await response.arrayBuffer();
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+      // Inverse chaque canal audio
+      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+        decoded.getChannelData(ch).reverse();
+      }
+      buffer = decoded;
+      reversedBufferCache[src] = buffer;
+    }
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.value = 0.4;
+    source.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    source.start(0);
+
+    currentAudio = { pause: () => source.stop(), currentTime: 0 };
+  } catch (err) {
+    console.warn('Lecture inversée impossible :', err);
+  }
+}
   // ============================================================
   // Cloud backend (Google Sheets + Apps Script) - optional
   // ============================================================
@@ -540,17 +615,22 @@
   }
 
   function setupSpecialRoom(type) {
-    clearSpecialRoomEffects();
-    currentSpecialRoom = type;
-    if (type === 'ice') {
-      generateIceCells();
-    } else if (type === 'volcano') {
-      generateLavaCyclePositions();
-      cycleLavaZones(); // première vague immédiate
-      lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
-    }
-    // 'mirror' n'a besoin d'aucun état supplémentaire : géré directement dans setDir()
+  clearSpecialRoomEffects();
+  currentSpecialRoom = type;
+  if (type === 'ice') {
+    generateIceCells();
+    playMusic('ice');
+  } else if (type === 'volcano') {
+    generateLavaCyclePositions();
+    cycleLavaZones();
+    lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
+    playMusic('volcano');
+  } else if (type === 'mirror') {
+    playMusic('classic', { reversed: true });
+  } else {
+    playMusic('classic'); // retour à une salle normale après une salle spéciale
   }
+}
 
   function generateIceCells() {
     iceCells = [];
@@ -615,7 +695,7 @@
     return iceCells.some(c => c.x === x && c.y === y);
   }
 
-  function resetRunState() {
+  function resetRunState() {    
     snake = [
       { x: 10, y: 10 },
       { x: 9, y: 10 },
@@ -643,6 +723,7 @@
     food = [];
     waitingForFirstInput = true;
     currentSpecialRoom = null;
+    playMusic('classic');
     clearSpecialRoomEffects();
     generateObstaclesForRoom();
     spawnFood();
@@ -962,6 +1043,7 @@
   }
 
   function endRun() {
+    stopMusic();
     alive = false;
     clearInterval(tickTimer);
     const metaGain = Math.max(1, Math.floor(score / 10) + room);
