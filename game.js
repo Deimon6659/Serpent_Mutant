@@ -66,7 +66,7 @@
   // Colle ici l'URL de ta Web App Apps Script (voir le tuto fourni).
   // Tant que cette URL n'est pas renseignée, tout fonctionne normalement
   // en local (localStorage) et les appels cloud sont simplement ignorés.
-  const WEBAPP_URL = ''; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
+  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec'; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
 
   function getOrCreatePlayerId() {
     let id = localStorage.getItem('serpentMutant_playerId');
