@@ -509,6 +509,112 @@
   let obstacleDensity = 0.05;
   let fruitsEatenThisRun = 0;
 
+  // ============================================================
+  // Special rooms (miroir / glace / volcan)
+  // ============================================================
+  const SPECIAL_ROOM_START = 3; // ne peuvent apparaître qu'à partir de cette salle
+  const SPECIAL_ROOM_CHANCE = 0.25; // 1 chance sur 4
+  const SPECIAL_ROOM_TYPES = ['mirror', 'ice', 'volcano'];
+
+  let currentSpecialRoom = null; // null | 'mirror' | 'ice' | 'volcano'
+  let iceCells = [];             // [{x,y}] cases givrées (niveau glace)
+  let slideQueue = 0;            // nombre de cases de glissade restantes à appliquer
+  let lavaCells = [];            // [{x,y}] cases actuellement en lave (niveau volcan)
+  let lavaCyclePositions = [];   // pool de positions candidates pour la lave
+  let lavaCycleTimer = null;
+  const LAVA_CYCLE_MS = 2500;    // à quel rythme les zones de lave changent de place
+  const LAVA_WARNING_MS = 900;   // temps d'avertissement visuel avant que ça devienne mortel
+
+  function rollSpecialRoom() {
+    if (room < SPECIAL_ROOM_START) return null;
+    if (Math.random() >= SPECIAL_ROOM_CHANCE) return null;
+    return SPECIAL_ROOM_TYPES[Math.floor(Math.random() * SPECIAL_ROOM_TYPES.length)];
+  }
+
+  function clearSpecialRoomEffects() {
+    if (lavaCycleTimer) { clearInterval(lavaCycleTimer); lavaCycleTimer = null; }
+    iceCells = [];
+    lavaCells = [];
+    lavaCyclePositions = [];
+    slideQueue = 0;
+  }
+
+  function setupSpecialRoom(type) {
+    clearSpecialRoomEffects();
+    currentSpecialRoom = type;
+    if (type === 'ice') {
+      generateIceCells();
+    } else if (type === 'volcano') {
+      generateLavaCyclePositions();
+      cycleLavaZones(); // première vague immédiate
+      lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
+    }
+    // 'mirror' n'a besoin d'aucun état supplémentaire : géré directement dans setDir()
+  }
+
+  function generateIceCells() {
+    iceCells = [];
+    const count = Math.floor(GRID * GRID * 0.06);
+    let tries = 0;
+    const headX = snake && snake[0] ? snake[0].x : 10;
+    const headY = snake && snake[0] ? snake[0].y : 10;
+    while (iceCells.length < count && tries < 400) {
+      tries++;
+      const x = Math.floor(Math.random() * GRID);
+      const y = Math.floor(Math.random() * GRID);
+      if (Math.abs(x - headX) < 4 && Math.abs(y - headY) < 4) continue;
+      if (!cellFree(x, y)) continue;
+      if (iceCells.some(c => c.x === x && c.y === y)) continue;
+      iceCells.push({ x, y });
+    }
+  }
+
+  function generateLavaCyclePositions() {
+    // Un pool plus large que ce qui est actif à un instant T, pour piocher dedans à chaque cycle
+    lavaCyclePositions = [];
+    const poolSize = Math.floor(GRID * GRID * 0.18);
+    let tries = 0;
+    while (lavaCyclePositions.length < poolSize && tries < 900) {
+      tries++;
+      const x = Math.floor(Math.random() * GRID);
+      const y = Math.floor(Math.random() * GRID);
+      if (lavaCyclePositions.some(c => c.x === x && c.y === y)) continue;
+      lavaCyclePositions.push({ x, y });
+    }
+  }
+
+  function cycleLavaZones() {
+    if (!alive || currentSpecialRoom !== 'volcano') return;
+    const headX = snake && snake[0] ? snake[0].x : 10;
+    const headY = snake && snake[0] ? snake[0].y : 10;
+    const activeCount = Math.floor(GRID * GRID * 0.05);
+    const candidates = lavaCyclePositions.filter(c =>
+      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3)
+    );
+    const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+    const nextActive = shuffled.slice(0, activeCount);
+
+    // Phase d'avertissement : la case clignote avant de devenir vraiment mortelle,
+    // pour laisser une chance de réagir plutôt qu'une mort instantanée imprévisible.
+    lavaCells = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
+  }
+
+  function isLavaActive(x, y) {
+    const cell = lavaCells.find(c => c.x === x && c.y === y);
+    if (!cell) return false;
+    return Date.now() >= cell.armedAt;
+  }
+
+  function isLavaWarning(x, y) {
+    const cell = lavaCells.find(c => c.x === x && c.y === y);
+    if (!cell) return false;
+    return Date.now() < cell.armedAt;
+  }
+
+  function isIceCell(x, y) {
+    return iceCells.some(c => c.x === x && c.y === y);
+  }
+
   function resetRunState() {
     snake = [
       { x: 10, y: 10 },
@@ -536,6 +642,8 @@
     particles = [];
     food = [];
     waitingForFirstInput = true;
+    currentSpecialRoom = null;
+    clearSpecialRoomEffects();
     generateObstaclesForRoom();
     spawnFood();
     updateHud();
@@ -607,6 +715,17 @@
     bestVal.textContent = Math.max(save.best, score);
     const diffLabel = document.getElementById('diffVal');
     if (diffLabel) diffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
+
+    const specialBlock = document.getElementById('specialRoomHudBlock');
+    const specialVal = document.getElementById('specialRoomVal');
+    if (specialBlock && specialVal) {
+      if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
+        specialVal.textContent = SPECIAL_ROOM_INFO[currentSpecialRoom].emoji + ' ' + SPECIAL_ROOM_INFO[currentSpecialRoom].label;
+        specialBlock.classList.remove('hidden');
+      } else {
+        specialBlock.classList.add('hidden');
+      }
+    }
   }
 
   function addParticles(x, y, color) {
@@ -632,9 +751,12 @@
     right: { x: 1, y: 0 }
   };
 
+  const MIRROR_MAP = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
   function setDir(d) {
     if (!alive) return;
-    const nd = DIRS[d];
+    const effectiveKey = currentSpecialRoom === 'mirror' ? MIRROR_MAP[d] : d;
+    const nd = DIRS[effectiveKey];
     if (!nd) return;
     if (nd.x === -dir.x && nd.y === -dir.y && snake.length > 1) return;
     nextDir = nd;
@@ -680,7 +802,14 @@
   // ============================================================
   function step() {
     if (!alive || waitingForFirstInput) return;
-    dir = nextDir;
+
+    // Sur la glace, la direction du joueur est ignorée le temps de la glissade :
+    // on continue dans la même direction jusqu'à épuisement de la glissade.
+    if (slideQueue > 0) {
+      slideQueue--;
+    } else {
+      dir = nextDir;
+    }
 
     let head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
@@ -701,11 +830,13 @@
         if (snake[i].x === head.x && snake[i].y === head.y) dead = true;
       }
     }
+    if (!dead && currentSpecialRoom === 'volcano' && isLavaActive(head.x, head.y)) dead = true;
 
     if (dead) {
       if (shieldCharges > 0) {
         shieldCharges--;
         addParticles(head.x, head.y, '#ffd93d');
+        slideQueue = 0;
         return;
       }
       endRun();
@@ -713,6 +844,11 @@
     }
 
     snake.unshift(head);
+
+    // Case givrée : programme 1-2 cases de glissade supplémentaires dans la même direction
+    if (currentSpecialRoom === 'ice' && isIceCell(head.x, head.y) && slideQueue === 0) {
+      slideQueue = 1 + Math.floor(Math.random() * 2); // 1 ou 2 cases
+    }
 
     if (magnetActive) {
       for (const f of food) {
@@ -760,6 +896,7 @@
 
   function advanceRoom() {
     room++;
+    currentSpecialRoom = rollSpecialRoom();
     updateHud();
     showMutationChoice();
   }
@@ -771,11 +908,27 @@
     return shuffled.slice(0, n);
   }
 
+  const SPECIAL_ROOM_INFO = {
+    mirror:  { emoji: '🪞', label: 'Salle Miroir',  desc: 'Les touches sont inversées : gauche ↔ droite, haut ↔ bas.' },
+    ice:     { emoji: '🧊', label: 'Salle Glace',   desc: 'Certaines cases sont givrées : tu glisses dessus sur 1-2 cases de plus.' },
+    volcano: { emoji: '🌋', label: 'Salle Volcan',  desc: 'Des zones de lave apparaissent et se déplacent. Rester dessus après l\'avertissement = game over.' }
+  };
+
   function showMutationChoice() {
     clearInterval(tickTimer);
     const choices = pickRandomMutations(3);
     const container = document.getElementById('mutChoices');
     container.innerHTML = '';
+
+    const specialBanner = document.getElementById('specialRoomBanner');
+    if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
+      const info = SPECIAL_ROOM_INFO[currentSpecialRoom];
+      specialBanner.innerHTML = `<div class="specialRoomTitle">${info.emoji} ${info.label}</div><div class="specialRoomDesc">${info.desc}</div>`;
+      specialBanner.classList.remove('hidden');
+    } else {
+      specialBanner.classList.add('hidden');
+    }
+
     choices.forEach(mut => {
       const card = document.createElement('div');
       card.className = 'mutCard';
@@ -786,9 +939,11 @@
         renderMutBar();
         overlayMut.classList.add('hidden');
         generateObstaclesForRoom();
+        setupSpecialRoom(currentSpecialRoom);
         food = [];
         spawnFood();
         waitingForFirstInput = true;
+        updateHud();
         startTicking();
       });
       container.appendChild(card);
@@ -851,6 +1006,31 @@
       ctx.moveTo(0, i * CELL);
       ctx.lineTo(canvas.width, i * CELL);
       ctx.stroke();
+    }
+
+    // Cases spéciales (glace / lave) rendues avant les obstacles et la nourriture
+    if (currentSpecialRoom === 'ice') {
+      iceCells.forEach(c => {
+        ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
+        ctx.strokeStyle = 'rgba(200, 235, 255, 0.6)';
+        ctx.lineWidth = 1;
+        roundRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5);
+        ctx.strokeRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4);
+      });
+    }
+    if (currentSpecialRoom === 'volcano') {
+      const now = Date.now();
+      lavaCells.forEach(c => {
+        const active = now >= c.armedAt;
+        if (active) {
+          ctx.fillStyle = '#ff4a2f';
+        } else {
+          // clignote pendant la phase d'avertissement
+          const blink = Math.floor(now / 150) % 2 === 0;
+          ctx.fillStyle = blink ? 'rgba(255, 150, 60, 0.55)' : 'rgba(255, 90, 40, 0.3)';
+        }
+        roundRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5);
+      });
     }
 
     ctx.fillStyle = '#3a3a5c';
