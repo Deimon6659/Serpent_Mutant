@@ -59,89 +59,83 @@
   }
 
   let save = loadSave();
-// ============================================================
-// Musique de fond
-// ============================================================
-const MUSIC_TRACKS = {
-  classic: 'audio/theme-classic.mp3',
-  ice: 'audio/theme-ice.mp3',
-  volcano: 'audio/theme-volcano.mp3'
-};
 
-let currentAudio = null;
-let musicEnabled = true; // pourra être relié à un bouton mute plus tard
+  // ============================================================
+  // Musique de fond
+  // ============================================================
+  const MUSIC_TRACKS = {
+    classic: 'audio/theme-classic.mp3',
+    ice: 'audio/theme-ice.mp3',
+    volcano: 'audio/theme-volcano.mp3'
+  };
 
-function stopMusic() {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
-  }
-}
+  let currentAudio = null;
+  let musicEnabled = true;
 
-function playMusic(trackKey, { reversed = false } = {}) {
-  if (!musicEnabled) return;
-  stopMusic();
-
-  const src = MUSIC_TRACKS[trackKey];
-  if (!src) return;
-
-  if (reversed) {
-    playReversedTrack(src);
-    return;
+  function stopMusic() {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+      currentAudio = null;
+    }
   }
 
-  const audio = new Audio(src);
-  audio.loop = true;
-  audio.volume = 0.4;
-  audio.play().catch(() => {
-    // Lecture bloquée par le navigateur tant qu'aucune interaction utilisateur
-    // n'a eu lieu sur la page - se reproduira au prochain clic/touche.
-  });
-  currentAudio = audio;
-}
+  function playMusic(trackKey, { reversed = false } = {}) {
+    if (!musicEnabled) return;
+    stopMusic();
 
-// Lecture à l'envers via Web Audio API (pour le niveau Miroir)
-let reversedBufferCache = {};
-async function playReversedTrack(src) {
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AudioContextClass();
+    const src = MUSIC_TRACKS[trackKey];
+    if (!src) return;
 
-    let buffer = reversedBufferCache[src];
-    if (!buffer) {
-      const response = await fetch(src);
-      const arrayBuffer = await response.arrayBuffer();
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      // Inverse chaque canal audio
-      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-        decoded.getChannelData(ch).reverse();
-      }
-      buffer = decoded;
-      reversedBufferCache[src] = buffer;
+    if (reversed) {
+      playReversedTrack(src);
+      return;
     }
 
-    const source = audioCtx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    const gainNode = audioCtx.createGain();
-    gainNode.gain.value = 0.4;
-    source.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    source.start(0);
-
-    currentAudio = { pause: () => source.stop(), currentTime: 0 };
-  } catch (err) {
-    console.warn('Lecture inversée impossible :', err);
+    const audio = new Audio(src);
+    audio.loop = true;
+    audio.volume = 0.4;
+    audio.play().catch(() => {});
+    currentAudio = audio;
   }
-}
+
+  let reversedBufferCache = {};
+  async function playReversedTrack(src) {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioContextClass();
+
+      let buffer = reversedBufferCache[src];
+      if (!buffer) {
+        const response = await fetch(src);
+        const arrayBuffer = await response.arrayBuffer();
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+        for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+          decoded.getChannelData(ch).reverse();
+        }
+        buffer = decoded;
+        reversedBufferCache[src] = buffer;
+      }
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 0.4;
+      source.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      source.start(0);
+
+      currentAudio = { pause: () => source.stop(), currentTime: 0 };
+    } catch (err) {
+      console.warn('Lecture inversée impossible :', err);
+    }
+  }
+
   // ============================================================
-  // Cloud backend (Google Sheets + Apps Script) - optional
+  // Cloud backend (Google Sheets + Apps Script)
   // ============================================================
-  // Colle ici l'URL de ta Web App Apps Script (voir le tuto fourni).
-  // Tant que cette URL n'est pas renseignée, tout fonctionne normalement
-  // en local (localStorage) et les appels cloud sont simplement ignorés.
-  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec'; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
+  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec';
 
   function getOrCreatePlayerId() {
     let id = localStorage.getItem('serpentMutant_playerId');
@@ -169,8 +163,6 @@ async function playReversedTrack(src) {
   }
 
   function updateCloudStatusIdle() {
-    // Don't overwrite a recent error message right away - give the player
-    // time to actually read it when they land back on the menu.
     if (Date.now() - lastCloudErrorTimestamp < CLOUD_ERROR_DISPLAY_MS) return;
     if (!cloudEnabled()) {
       setCloudStatus('☁️ Mode local uniquement (aucune URL cloud configurée)');
@@ -184,7 +176,7 @@ async function playReversedTrack(src) {
     try {
       const res = await fetch(WEBAPP_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // évite le preflight CORS qui bloque Apps Script
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'submitScore',
           playerId: PLAYER_ID,
@@ -245,7 +237,6 @@ async function playReversedTrack(src) {
       return [];
     }
   }
-
 
   function addTopScore(score, room) {
     save.topScores.push({ score, room, date: Date.now() });
@@ -587,18 +578,18 @@ async function playReversedTrack(src) {
   // ============================================================
   // Special rooms (miroir / glace / volcan)
   // ============================================================
-  const SPECIAL_ROOM_START = 3; // ne peuvent apparaître qu'à partir de cette salle
-  const SPECIAL_ROOM_CHANCE = 0.25; // 1 chance sur 4
+  const SPECIAL_ROOM_START = 3;
+  const SPECIAL_ROOM_CHANCE = 0.25;
   const SPECIAL_ROOM_TYPES = ['mirror', 'ice', 'volcano'];
 
-  let currentSpecialRoom = null; // null | 'mirror' | 'ice' | 'volcano'
-  let iceCells = [];             // [{x,y}] cases givrées (niveau glace)
-  let slideQueue = 0;            // nombre de cases de glissade restantes à appliquer
-  let lavaCells = [];            // [{x,y}] cases actuellement en lave (niveau volcan)
-  let lavaCyclePositions = [];   // pool de positions candidates pour la lave
+  let currentSpecialRoom = null;
+  let iceCells = [];
+  let slideQueue = 0;
+  let lavaCells = [];
+  let lavaCyclePositions = [];
   let lavaCycleTimer = null;
-  const LAVA_CYCLE_MS = 2500;    // à quel rythme les zones de lave changent de place
-  const LAVA_WARNING_MS = 900;   // temps d'avertissement visuel avant que ça devienne mortel
+  const LAVA_CYCLE_MS = 2500;
+  const LAVA_WARNING_MS = 900;
 
   function rollSpecialRoom() {
     if (room < SPECIAL_ROOM_START) return null;
@@ -615,22 +606,22 @@ async function playReversedTrack(src) {
   }
 
   function setupSpecialRoom(type) {
-  clearSpecialRoomEffects();
-  currentSpecialRoom = type;
-  if (type === 'ice') {
-    generateIceCells();
-    playMusic('ice');
-  } else if (type === 'volcano') {
-    generateLavaCyclePositions();
-    cycleLavaZones();
-    lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
-    playMusic('volcano');
-  } else if (type === 'mirror') {
-    playMusic('classic', { reversed: true });
-  } else {
-    playMusic('classic'); // retour à une salle normale après une salle spéciale
+    clearSpecialRoomEffects();
+    currentSpecialRoom = type;
+    if (type === 'ice') {
+      generateIceCells();
+      playMusic('ice');
+    } else if (type === 'volcano') {
+      generateLavaCyclePositions();
+      cycleLavaZones();
+      lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
+      playMusic('volcano');
+    } else if (type === 'mirror') {
+      playMusic('classic', { reversed: true });
+    } else {
+      playMusic('classic');
+    }
   }
-}
 
   function generateIceCells() {
     iceCells = [];
@@ -650,7 +641,6 @@ async function playReversedTrack(src) {
   }
 
   function generateLavaCyclePositions() {
-    // Un pool plus large que ce qui est actif à un instant T, pour piocher dedans à chaque cycle
     lavaCyclePositions = [];
     const poolSize = Math.floor(GRID * GRID * 0.18);
     let tries = 0;
@@ -673,9 +663,6 @@ async function playReversedTrack(src) {
     );
     const shuffled = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
-
-    // Phase d'avertissement : la case clignote avant de devenir vraiment mortelle,
-    // pour laisser une chance de réagir plutôt qu'une mort instantanée imprévisible.
     lavaCells = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
   }
 
@@ -884,8 +871,6 @@ async function playReversedTrack(src) {
   function step() {
     if (!alive || waitingForFirstInput) return;
 
-    // Sur la glace, la direction du joueur est ignorée le temps de la glissade :
-    // on continue dans la même direction jusqu'à épuisement de la glissade.
     if (slideQueue > 0) {
       slideQueue--;
     } else {
@@ -926,9 +911,8 @@ async function playReversedTrack(src) {
 
     snake.unshift(head);
 
-    // Case givrée : programme 1-2 cases de glissade supplémentaires dans la même direction
     if (currentSpecialRoom === 'ice' && isIceCell(head.x, head.y) && slideQueue === 0) {
-      slideQueue = 1 + Math.floor(Math.random() * 2); // 1 ou 2 cases
+      slideQueue = 1 + Math.floor(Math.random() * 2);
     }
 
     if (magnetActive) {
@@ -1090,7 +1074,6 @@ async function playReversedTrack(src) {
       ctx.stroke();
     }
 
-    // Cases spéciales (glace / lave) rendues avant les obstacles et la nourriture
     if (currentSpecialRoom === 'ice') {
       iceCells.forEach(c => {
         ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
@@ -1107,7 +1090,6 @@ async function playReversedTrack(src) {
         if (active) {
           ctx.fillStyle = '#ff4a2f';
         } else {
-          // clignote pendant la phase d'avertissement
           const blink = Math.floor(now / 150) % 2 === 0;
           ctx.fillStyle = blink ? 'rgba(255, 150, 60, 0.55)' : 'rgba(255, 90, 40, 0.3)';
         }
@@ -1213,7 +1195,6 @@ async function playReversedTrack(src) {
   function renderLoop() {
     updateParticles();
     if (!menuOverlay.classList.contains('hidden')) {
-      // idle on menu - nothing to draw on canvas (hidden anyway)
     } else {
       draw();
     }
@@ -1267,7 +1248,6 @@ async function playReversedTrack(src) {
   });
 
   btnMenuFromGame.addEventListener('click', () => {
-    // pause/abandon current run and return to menu without counting it as a loss twice
     stopTicking();
     alive = false;
     showScreen('menu');
