@@ -359,6 +359,12 @@
       <div class="statBox"><div class="n" id="statBest">0</div><div class="l">Meilleur score</div></div>
       <div class="statBox"><div class="n" id="statMeta">0</div><div class="l">Éclats</div></div>
     </div>
+    <div style="margin: 14px 0; text-align: left;">
+      <label for="pseudoInput" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Ton pseudo (affiché dans le classement)</label>
+      <input type="text" id="pseudoInput" maxlength="18" placeholder="Anonyme"
+        style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit;">
+    </div>
+    <div id="cloudStatus" style="font-size: 0.75rem; color: #9a9ab5; margin-bottom: 6px; text-align: center;"></div>
     <div class="menuButtons">
       <button id="btnStart">▶ Commencer un run</button>
       <button id="btnOpenShop" class="secondary">🛒 Boutique</button>
@@ -515,7 +521,7 @@
   // Colle ici l'URL de ta Web App Apps Script (voir le tuto fourni).
   // Tant que cette URL n'est pas renseignée, tout fonctionne normalement
   // en local (localStorage) et les appels cloud sont simplement ignorés.
-  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwSpnGX-Dp37fkJAsvQHAYR9ifVjz69Sog4PjNi_CnF/dev'; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
+  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec'; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
 
   function getOrCreatePlayerId() {
     let id = localStorage.getItem('serpentMutant_playerId');
@@ -531,39 +537,75 @@
     return typeof WEBAPP_URL === 'string' && WEBAPP_URL.trim().length > 0;
   }
 
+  let lastCloudErrorTimestamp = 0;
+  const CLOUD_ERROR_DISPLAY_MS = 8000;
+
+  function setCloudStatus(text, isError) {
+    const el = document.getElementById('cloudStatus');
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = isError ? '#ff6b9d' : '#9a9ab5';
+    if (isError) lastCloudErrorTimestamp = Date.now();
+  }
+
+  function updateCloudStatusIdle() {
+    // Don't overwrite a recent error message right away - give the player
+    // time to actually read it when they land back on the menu.
+    if (Date.now() - lastCloudErrorTimestamp < CLOUD_ERROR_DISPLAY_MS) return;
+    if (!cloudEnabled()) {
+      setCloudStatus('☁️ Mode local uniquement (aucune URL cloud configurée)');
+    } else {
+      setCloudStatus('☁️ Connecté au classement en ligne');
+    }
+  }
+
   async function submitScoreToCloud(scoreVal, roomVal, eclatsGagnes, difficulty) {
     if (!cloudEnabled()) return;
     try {
-      await fetch(WEBAPP_URL, {
+      const res = await fetch(WEBAPP_URL, {
         method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // évite le preflight CORS qui bloque Apps Script
         body: JSON.stringify({
           action: 'submitScore',
           playerId: PLAYER_ID,
-          pseudo: localStorage.getItem('serpentMutant_pseudo') || 'Anonyme',
+          pseudo: (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
           score: scoreVal,
           room: roomVal,
           difficulty: difficulty,
           eclats: eclatsGagnes
         })
       });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || (data && data.error)) {
+        setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
+      } else {
+        setCloudStatus('✅ Score envoyé au classement en ligne');
+      }
     } catch (err) {
       console.warn('Envoi du score au cloud a échoué (le score local reste sauvegardé) :', err);
+      setCloudStatus('⚠️ Envoi au cloud impossible (voir console)', true);
     }
   }
 
   async function saveEclatsToCloud(totalEclats) {
     if (!cloudEnabled()) return;
     try {
-      await fetch(WEBAPP_URL, {
+      const res = await fetch(WEBAPP_URL, {
         method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'saveEclats',
           playerId: PLAYER_ID,
           totalEclats: totalEclats
         })
       });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || (data && data.error)) {
+        setCloudStatus('⚠️ Éclats non synchronisés (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
+      }
     } catch (err) {
       console.warn('Sauvegarde des Éclats au cloud a échoué (la sauvegarde locale reste valide) :', err);
+      setCloudStatus('⚠️ Synchro Éclats impossible (voir console)', true);
     }
   }
 
@@ -572,9 +614,14 @@
     try {
       const res = await fetch(WEBAPP_URL + '?action=getTopScores');
       const data = await res.json();
+      if (data && data.error) {
+        setCloudStatus('⚠️ Classement global : ' + data.error, true);
+        return [];
+      }
       return Array.isArray(data) ? data : [];
     } catch (err) {
       console.warn('Impossible de récupérer le classement global :', err);
+      setCloudStatus('⚠️ Classement global inaccessible (voir console)', true);
       return [];
     }
   }
@@ -706,6 +753,9 @@
 
     if (name === 'menu') {
       refreshTopHud();
+      const pseudoInput = document.getElementById('pseudoInput');
+      if (pseudoInput) pseudoInput.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      updateCloudStatusIdle();
       menuOverlay.classList.remove('hidden');
     } else if (name === 'difficulty') {
       renderDifficultyScreen();
@@ -1374,6 +1424,12 @@
   // ============================================================
   // Navigation wiring
   // ============================================================
+  document.getElementById('pseudoInput').addEventListener('input', (e) => {
+    const val = e.target.value.trim();
+    if (val) localStorage.setItem('serpentMutant_pseudo', val);
+    else localStorage.removeItem('serpentMutant_pseudo');
+  });
+
   document.getElementById('btnStart').addEventListener('click', () => {
     showScreen('difficulty');
   });
