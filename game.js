@@ -583,35 +583,40 @@ async function playReversedTrack(src) {
     }
     section.classList.remove('hidden');
     list.innerHTML = '<div class="emptyScores">Chargement…</div>';
-    const globalScores = await fetchGlobalTopScores();
-    if (!globalScores || globalScores.length === 0) {
-      list.innerHTML = '<div class="emptyScores">Aucun score global pour l’instant.</div>';
-      return;
+    try {
+      const globalScores = await fetchGlobalTopScores();
+      if (!globalScores || globalScores.length === 0) {
+        list.innerHTML = '<div class="emptyScores">Aucun score global pour l’instant.</div>';
+        return;
+      }
+      list.innerHTML = '';
+      globalScores.slice(0, 10).forEach((s, i) => {
+        const row = document.createElement('div');
+        row.className = 'scoreRow';
+
+        const rank = document.createElement('div');
+        rank.className = 'rank';
+        rank.textContent = String(i + 1);
+
+        const details = document.createElement('div');
+        details.className = 'details';
+        const sc = document.createElement('div');
+        sc.className = 'sc';
+        sc.textContent = `${s.pseudo || 'Anonyme'} — ${s.score} pts`;
+        const rm = document.createElement('div');
+        rm.className = 'rm';
+        rm.textContent = `Salle ${s.room} · ${s.difficulty || 'normal'}`;
+        details.appendChild(sc);
+        details.appendChild(rm);
+
+        row.appendChild(rank);
+        row.appendChild(details);
+        list.appendChild(row);
+      });
+    } catch (err) {
+      console.warn('Rendu du classement global impossible (structure inattendue) :', err);
+      list.innerHTML = '<div class="emptyScores">Classement global indisponible pour l’instant.</div>';
     }
-    list.innerHTML = '';
-    globalScores.slice(0, 10).forEach((s, i) => {
-      const row = document.createElement('div');
-      row.className = 'scoreRow';
-
-      const rank = document.createElement('div');
-      rank.className = 'rank';
-      rank.textContent = String(i + 1);
-
-      const details = document.createElement('div');
-      details.className = 'details';
-      const sc = document.createElement('div');
-      sc.className = 'sc';
-      sc.textContent = `${s.pseudo || 'Anonyme'} — ${s.score} pts`;
-      const rm = document.createElement('div');
-      rm.className = 'rm';
-      rm.textContent = `Salle ${s.room} · ${s.difficulty || 'normal'}`;
-      details.appendChild(sc);
-      details.appendChild(rm);
-
-      row.appendChild(rank);
-      row.appendChild(details);
-      list.appendChild(row);
-    });
   }
 
   const DIFFICULTIES = {
@@ -744,7 +749,8 @@ async function playReversedTrack(src) {
     const headY = snake && snake[0] ? snake[0].y : 10;
     const activeCount = Math.floor(GRID * GRID * 0.05);
     const candidates = lavaCyclePositions.filter(c =>
-      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3)
+      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
+      !food.some(f => f.x === c.x && f.y === c.y)
     );
     const shuffled = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
@@ -984,7 +990,11 @@ async function playReversedTrack(src) {
       for (const o of obstacles) if (o.x === head.x && o.y === head.y) dead = true;
     }
     if (!dead) {
-      for (let i = 0; i < snake.length - 1; i++) {
+      // Si la case cible contient un fruit, le serpent va grandir ce tick :
+      // la queue ne bougera pas, donc elle compte aussi comme un obstacle.
+      const willEat = food.some(f => f.x === head.x && f.y === head.y);
+      const checkLen = willEat ? snake.length : snake.length - 1;
+      for (let i = 0; i < checkLen; i++) {
         if (snake[i].x === head.x && snake[i].y === head.y) dead = true;
       }
     }
@@ -1012,8 +1022,15 @@ async function playReversedTrack(src) {
       for (const f of food) {
         const d = Math.abs(f.x - head.x) + Math.abs(f.y - head.y);
         if (d <= 4 && d > 0 && Math.random() < 0.3) {
-          if (f.x < head.x) f.x++; else if (f.x > head.x) f.x--;
-          if (f.y < head.y) f.y++; else if (f.y > head.y) f.y--;
+          let nx = f.x, ny = f.y;
+          if (f.x < head.x) nx++; else if (f.x > head.x) nx--;
+          if (f.y < head.y) ny++; else if (f.y > head.y) ny--;
+          // N'attire le fruit que si la case cible est réellement libre
+          // (pas d'obstacle, de glace/lave, ou du corps du serpent).
+          if (!(nx === f.x && ny === f.y) && cellFree(nx, ny)) {
+            f.x = nx;
+            f.y = ny;
+          }
         }
       }
     }
@@ -1391,6 +1408,8 @@ async function playReversedTrack(src) {
     // pause/abandon current run and return to menu without counting it as a loss twice
     stopTicking();
     alive = false;
+    stopMusic();
+    clearSpecialRoomEffects();
     showScreen('menu');
   });
 
