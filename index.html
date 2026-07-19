@@ -61,6 +61,7 @@
       <button id="btnStart">▶ Commencer un run</button>
       <button id="btnOpenShop" class="secondary">🛒 Boutique</button>
       <button id="btnOpenScores" class="secondary">🏆 Scores</button>
+      <button id="btnOpenFeedback" class="secondary">🐛 Bugs/Suggestions</button>
     </div>
   </div>
 </div>
@@ -113,6 +114,37 @@
     </div>
     <div class="menuButtons">
       <button id="btnCloseScores" class="secondary">← Retour au menu</button>
+    </div>
+  </div>
+</div>
+
+<!-- FEEDBACK (Bugs/Suggestions) -->
+<div id="feedbackOverlay" class="overlayBase hidden">
+  <div class="panel">
+    <h2>🐛 Bugs / Suggestions</h2>
+    <div class="shopTabs">
+      <div class="shopTab active" data-feedback-tab="bug">🐛 Bug</div>
+      <div class="shopTab" data-feedback-tab="suggestion">💡 Suggestion</div>
+    </div>
+
+    <div id="feedbackBugFields">
+      <div style="margin: 14px 0; text-align: left;">
+        <label for="feedbackContextInput" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Où / quand ça s'est produit (salle, menu, etc.)</label>
+        <input type="text" id="feedbackContextInput" maxlength="120" placeholder="Ex : Salle 7, en salle Volcan"
+          style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit;">
+      </div>
+    </div>
+
+    <div style="margin: 14px 0; text-align: left;">
+      <label for="feedbackMessageInput" id="feedbackMessageLabel" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Décris le problème</label>
+      <textarea id="feedbackMessageInput" maxlength="1000" rows="5" placeholder="Explique ce qui s'est passé..."
+        style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit; resize: vertical;"></textarea>
+    </div>
+    <div id="feedbackStatus" style="font-size: 0.75rem; margin-bottom: 6px; color: #9a9ab5; min-height: 1em;"></div>
+
+    <div class="menuButtons">
+      <button id="btnSubmitFeedback">Envoyer</button>
+      <button id="btnCloseFeedback" class="secondary">← Retour au menu</button>
     </div>
   </div>
 </div>
