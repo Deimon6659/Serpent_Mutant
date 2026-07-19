@@ -452,8 +452,7 @@ async function playReversedTrack(src) {
 
     if (name === 'menu') {
       refreshTopHud();
-      const pseudoInput = document.getElementById('pseudoInput');
-      if (pseudoInput) pseudoInput.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      refreshPseudoLockUI();
       updateCloudStatusIdle();
       menuOverlay.classList.remove('hidden');
     } else if (name === 'difficulty') {
@@ -715,9 +714,16 @@ async function playReversedTrack(src) {
     slideQueue = 0;
   }
 
+  // Mémorise si la salle précédente était spéciale, pour savoir si le thème
+  // classique doit être relancé en entrant dans une salle normale (sortie de
+  // salle spéciale) ou simplement laissé à boucler (normale → normale).
+  let lastRoomWasSpecial = false;
+
   function setupSpecialRoom(type) {
+  const wasSpecial = lastRoomWasSpecial;
   clearSpecialRoomEffects();
   currentSpecialRoom = type;
+  lastRoomWasSpecial = !!type;
   if (type === 'ice') {
     generateIceCells();
     playMusic('ice');
@@ -728,8 +734,13 @@ async function playReversedTrack(src) {
     playMusic('volcano');
   } else if (type === 'mirror') {
     playMusic('classic', { reversed: true });
-  } else {
-    playMusic('classic'); // retour à une salle normale après une salle spéciale
+  } else if (wasSpecial) {
+    // On ne relance le thème classique que si on QUITTE une salle spéciale
+    // (miroir/glace/volcan) pour une salle normale. Avant, ce cas se
+    // déclenchait aussi en passant d'une salle normale à une autre salle
+    // normale, ce qui faisait repartir le thème classique depuis le début
+    // à chaque salle au lieu de le laisser boucler tranquillement.
+    playMusic('classic');
   }
 }
 
@@ -828,6 +839,7 @@ async function playReversedTrack(src) {
     food = [];
     waitingForFirstInput = true;
     currentSpecialRoom = null;
+    lastRoomWasSpecial = false;
     playMusic('classic');
     clearSpecialRoomEffects();
     generateObstaclesForRoom();
@@ -1364,10 +1376,24 @@ async function playReversedTrack(src) {
   const pseudoInputEl = document.getElementById('pseudoInput');
   const pseudoStatusEl = document.getElementById('pseudoStatus');
 
-  if (isPseudoLocked()) {
-    pseudoInputEl.disabled = true;
-    if (pseudoStatusEl) pseudoStatusEl.textContent = '🔒 Pseudo verrouillé définitivement';
+  // Applique l'état de verrouillage du pseudo au champ + au message affiché.
+  // Appelé au chargement ET à chaque retour au menu (showScreen('menu')) :
+  // avant, le verrouillage posé en cours de session (premier score envoyé
+  // avec succès via lockPseudo()) ne se reflétait dans l'UI qu'après un
+  // rechargement complet de la page, ce qui laissait le champ éditable
+  // sans aucune indication visuelle du blocage silencieux.
+  function refreshPseudoLockUI() {
+    if (isPseudoLocked()) {
+      pseudoInputEl.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      pseudoInputEl.disabled = true;
+      if (pseudoStatusEl) pseudoStatusEl.textContent = '🔒 Pseudo verrouillé définitivement';
+    } else {
+      pseudoInputEl.disabled = false;
+      pseudoInputEl.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      if (pseudoStatusEl) pseudoStatusEl.textContent = '';
+    }
   }
+  refreshPseudoLockUI();
 
   let pseudoCheckTimer = null;
   pseudoInputEl.addEventListener('input', (e) => {
