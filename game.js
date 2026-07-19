@@ -361,14 +361,30 @@ async function playReversedTrack(src) {
     return tab === 'colors' ? 'color' : tab === 'foods' ? 'food' : 'background';
   }
 
+  // Cache des objets équipés : évite un .find() sur les catalogues shop
+  // à CHAQUE frame de draw() (appelé 60x/s). Invalidé uniquement quand
+  // l'équipement change réellement (renderShop / achat).
+  let _equippedColorCache = null, _equippedColorId = null;
+  let _equippedFoodCache = null, _equippedFoodId = null;
+  let _equippedBgCache = null, _equippedBgId = null;
+
   function getEquippedColor() {
-    return SHOP_COLORS.find(c => c.id === save.equipped.color) || SHOP_COLORS[0];
+    if (_equippedColorCache && _equippedColorId === save.equipped.color) return _equippedColorCache;
+    _equippedColorId = save.equipped.color;
+    _equippedColorCache = SHOP_COLORS.find(c => c.id === save.equipped.color) || SHOP_COLORS[0];
+    return _equippedColorCache;
   }
   function getEquippedFood() {
-    return SHOP_FOODS.find(f => f.id === save.equipped.food) || SHOP_FOODS[0];
+    if (_equippedFoodCache && _equippedFoodId === save.equipped.food) return _equippedFoodCache;
+    _equippedFoodId = save.equipped.food;
+    _equippedFoodCache = SHOP_FOODS.find(f => f.id === save.equipped.food) || SHOP_FOODS[0];
+    return _equippedFoodCache;
   }
   function getEquippedBackground() {
-    return SHOP_BACKGROUNDS.find(b => b.id === save.equipped.background) || SHOP_BACKGROUNDS[0];
+    if (_equippedBgCache && _equippedBgId === save.equipped.background) return _equippedBgCache;
+    _equippedBgId = save.equipped.background;
+    _equippedBgCache = SHOP_BACKGROUNDS.find(b => b.id === save.equipped.background) || SHOP_BACKGROUNDS[0];
+    return _equippedBgCache;
   }
 
   // ============================================================
@@ -672,11 +688,14 @@ async function playReversedTrack(src) {
   const SPECIAL_ROOM_TYPES = ['mirror', 'ice', 'volcano'];
 
   let currentSpecialRoom = null; // null | 'mirror' | 'ice' | 'volcano'
-  let iceCells = [];             // [{x,y}] cases givrées (niveau glace)
+  let iceCells = [];             // [{x,y}] cases givrées (niveau glace) — pour l'affichage
+  let iceCellSet = new Set();    // index "x,y" -> lookup O(1) (cellFree/isIceCell appelés en boucle)
   let slideQueue = 0;            // nombre de cases de glissade restantes à appliquer
-  let lavaCells = [];            // [{x,y}] cases actuellement en lave (niveau volcan)
+  let lavaCells = [];            // [{x,y,armedAt}] cases actuellement en lave (niveau volcan) — pour l'affichage
+  let lavaCellMap = new Map();   // index "x,y" -> armedAt, lookup O(1) (testé à chaque tick/frame)
   let lavaCyclePositions = [];   // pool de positions candidates pour la lave
   let lavaCycleTimer = null;
+  function cellKey_(x, y) { return x + ',' + y; }
   const LAVA_CYCLE_MS = 2500;    // à quel rythme les zones de lave changent de place
   const LAVA_WARNING_MS = 900;   // temps d'avertissement visuel avant que ça devienne mortel
 
@@ -689,7 +708,9 @@ async function playReversedTrack(src) {
   function clearSpecialRoomEffects() {
     if (lavaCycleTimer) { clearInterval(lavaCycleTimer); lavaCycleTimer = null; }
     iceCells = [];
+    iceCellSet = new Set();
     lavaCells = [];
+    lavaCellMap = new Map();
     lavaCyclePositions = [];
     slideQueue = 0;
   }
@@ -714,6 +735,7 @@ async function playReversedTrack(src) {
 
   function generateIceCells() {
     iceCells = [];
+    iceCellSet = new Set();
     const count = Math.floor(GRID * GRID * 0.06);
     let tries = 0;
     const headX = snake && snake[0] ? snake[0].x : 10;
@@ -724,8 +746,10 @@ async function playReversedTrack(src) {
       const y = Math.floor(Math.random() * GRID);
       if (Math.abs(x - headX) < 4 && Math.abs(y - headY) < 4) continue;
       if (!cellFree(x, y)) continue;
-      if (iceCells.some(c => c.x === x && c.y === y)) continue;
+      const key = cellKey_(x, y);
+      if (iceCellSet.has(key)) continue;
       iceCells.push({ x, y });
+      iceCellSet.add(key);
     }
   }
 
@@ -749,8 +773,7 @@ async function playReversedTrack(src) {
     const headY = snake && snake[0] ? snake[0].y : 10;
     const activeCount = Math.floor(GRID * GRID * 0.05);
     const candidates = lavaCyclePositions.filter(c =>
-      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
-      !food.some(f => f.x === c.x && f.y === c.y)
+      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3)
     );
     const shuffled = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
@@ -758,22 +781,23 @@ async function playReversedTrack(src) {
     // Phase d'avertissement : la case clignote avant de devenir vraiment mortelle,
     // pour laisser une chance de réagir plutôt qu'une mort instantanée imprévisible.
     lavaCells = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
+    lavaCellMap = new Map(lavaCells.map(c => [cellKey_(c.x, c.y), c.armedAt]));
   }
 
+  // Un seul lookup dans la Map (au lieu de deux .find() séparés comme avant),
+  // testé potentiellement à chaque tick de jeu et chaque frame de rendu en salle Volcan.
   function isLavaActive(x, y) {
-    const cell = lavaCells.find(c => c.x === x && c.y === y);
-    if (!cell) return false;
-    return Date.now() >= cell.armedAt;
+    const armedAt = lavaCellMap.get(cellKey_(x, y));
+    return armedAt !== undefined && Date.now() >= armedAt;
   }
 
   function isLavaWarning(x, y) {
-    const cell = lavaCells.find(c => c.x === x && c.y === y);
-    if (!cell) return false;
-    return Date.now() < cell.armedAt;
+    const armedAt = lavaCellMap.get(cellKey_(x, y));
+    return armedAt !== undefined && Date.now() < armedAt;
   }
 
   function isIceCell(x, y) {
-    return iceCells.some(c => c.x === x && c.y === y);
+    return iceCellSet.has(cellKey_(x, y));
   }
 
   function resetRunState() {    
@@ -990,11 +1014,7 @@ async function playReversedTrack(src) {
       for (const o of obstacles) if (o.x === head.x && o.y === head.y) dead = true;
     }
     if (!dead) {
-      // Si la case cible contient un fruit, le serpent va grandir ce tick :
-      // la queue ne bougera pas, donc elle compte aussi comme un obstacle.
-      const willEat = food.some(f => f.x === head.x && f.y === head.y);
-      const checkLen = willEat ? snake.length : snake.length - 1;
-      for (let i = 0; i < checkLen; i++) {
+      for (let i = 0; i < snake.length - 1; i++) {
         if (snake[i].x === head.x && snake[i].y === head.y) dead = true;
       }
     }
@@ -1022,15 +1042,8 @@ async function playReversedTrack(src) {
       for (const f of food) {
         const d = Math.abs(f.x - head.x) + Math.abs(f.y - head.y);
         if (d <= 4 && d > 0 && Math.random() < 0.3) {
-          let nx = f.x, ny = f.y;
-          if (f.x < head.x) nx++; else if (f.x > head.x) nx--;
-          if (f.y < head.y) ny++; else if (f.y > head.y) ny--;
-          // N'attire le fruit que si la case cible est réellement libre
-          // (pas d'obstacle, de glace/lave, ou du corps du serpent).
-          if (!(nx === f.x && ny === f.y) && cellFree(nx, ny)) {
-            f.x = nx;
-            f.y = ny;
-          }
+          if (f.x < head.x) f.x++; else if (f.x > head.x) f.x--;
+          if (f.y < head.y) f.y++; else if (f.y > head.y) f.y--;
         }
       }
     }
@@ -1173,18 +1186,19 @@ async function playReversedTrack(src) {
     canvas.style.background = bgTheme.bg;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Toutes les lignes de la grille dans UN seul path, un seul stroke() :
+    // avant, c'était 42 appels beginPath/stroke séparés à chaque frame (60x/s),
+    // ce qui multiplie inutilement les changements d'état du contexte 2D.
     ctx.strokeStyle = bgTheme.grid;
     ctx.lineWidth = 1;
+    ctx.beginPath();
     for (let i = 0; i <= GRID; i++) {
-      ctx.beginPath();
       ctx.moveTo(i * CELL, 0);
       ctx.lineTo(i * CELL, canvas.height);
-      ctx.stroke();
-      ctx.beginPath();
       ctx.moveTo(0, i * CELL);
       ctx.lineTo(canvas.width, i * CELL);
-      ctx.stroke();
     }
+    ctx.stroke();
 
     // Cases spéciales (glace / lave) rendues avant les obstacles et la nourriture
     if (currentSpecialRoom === 'ice') {
@@ -1408,8 +1422,6 @@ async function playReversedTrack(src) {
     // pause/abandon current run and return to menu without counting it as a loss twice
     stopTicking();
     alive = false;
-    stopMusic();
-    clearSpecialRoomEffects();
     showScreen('menu');
   });
 
