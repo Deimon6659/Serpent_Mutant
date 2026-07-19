@@ -247,6 +247,32 @@ async function playReversedTrack(src) {
     }
   }
 
+  async function submitFeedbackToCloud(type, context, message) {
+    if (!cloudEnabled()) return { ok: false, error: 'no_cloud' };
+    try {
+      const res = await fetch(WEBAPP_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'submitFeedback',
+          playerId: PLAYER_ID,
+          pseudo: (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
+          type: type,
+          context: context || '',
+          message: message
+        })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || (data && data.error)) {
+        return { ok: false, error: (data && data.error) ? data.error : ('HTTP ' + res.status) };
+      }
+      return { ok: true };
+    } catch (err) {
+      console.warn('Envoi du feedback a échoué :', err);
+      return { ok: false, error: 'network' };
+    }
+  }
+
   async function saveEclatsToCloud(totalEclats) {
     if (!cloudEnabled()) return;
     try {
@@ -424,6 +450,7 @@ async function playReversedTrack(src) {
   const scoresOverlay = document.getElementById('scoresOverlay');
   const overlayMut = document.getElementById('mutOverlay');
   const overlayOver = document.getElementById('overOverlay');
+  const feedbackOverlay = document.getElementById('feedbackOverlay');
 
   function refreshTopHud() {
     bestVal.textContent = save.best;
@@ -444,6 +471,7 @@ async function playReversedTrack(src) {
     difficultyOverlay.classList.add('hidden');
     overlayMut.classList.add('hidden');
     overlayOver.classList.add('hidden');
+    feedbackOverlay.classList.add('hidden');
     hud.classList.add('hidden');
     gameWrap.classList.add('hidden');
     btnMenuFromGame.classList.add('hidden');
@@ -465,6 +493,9 @@ async function playReversedTrack(src) {
     } else if (name === 'scores') {
       renderScores();
       scoresOverlay.classList.remove('hidden');
+    } else if (name === 'feedback') {
+      openFeedbackScreen();
+      feedbackOverlay.classList.remove('hidden');
     } else if (name === 'game') {
       hud.classList.remove('hidden');
       gameWrap.classList.remove('hidden');
@@ -1449,6 +1480,91 @@ async function playReversedTrack(src) {
     stopTicking();
     alive = false;
     showScreen('menu');
+  });
+
+  // ============================================================
+  // Feedback (Bugs/Suggestions)
+  // ============================================================
+  let currentFeedbackTab = 'bug';
+  const feedbackBugFields = document.getElementById('feedbackBugFields');
+  const feedbackContextInput = document.getElementById('feedbackContextInput');
+  const feedbackMessageInput = document.getElementById('feedbackMessageInput');
+  const feedbackMessageLabel = document.getElementById('feedbackMessageLabel');
+  const feedbackStatusEl = document.getElementById('feedbackStatus');
+  const btnSubmitFeedback = document.getElementById('btnSubmitFeedback');
+
+  function renderFeedbackTabUI() {
+    document.querySelectorAll('[data-feedback-tab]').forEach(t => {
+      t.classList.toggle('active', t.dataset.feedbackTab === currentFeedbackTab);
+    });
+    if (currentFeedbackTab === 'bug') {
+      feedbackBugFields.classList.remove('hidden');
+      feedbackMessageLabel.textContent = 'Décris le problème';
+      feedbackMessageInput.placeholder = "Explique ce qui s'est passé...";
+    } else {
+      feedbackBugFields.classList.add('hidden');
+      feedbackMessageLabel.textContent = 'Ton idée';
+      feedbackMessageInput.placeholder = "Qu'est-ce qu'on pourrait ajouter ou améliorer ?";
+    }
+  }
+
+  document.querySelectorAll('[data-feedback-tab]').forEach(tabEl => {
+    tabEl.addEventListener('click', () => {
+      currentFeedbackTab = tabEl.dataset.feedbackTab;
+      renderFeedbackTabUI();
+    });
+  });
+
+  function openFeedbackScreen() {
+    currentFeedbackTab = 'bug';
+    feedbackMessageInput.value = '';
+    feedbackStatusEl.textContent = '';
+    // Pré-remplit le contexte si un run est en cours (champ reste libre/modifiable)
+    if (alive) {
+      const specialLabel = currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]
+        ? ' (' + SPECIAL_ROOM_INFO[currentSpecialRoom].label + ')'
+        : '';
+      feedbackContextInput.value = 'Salle ' + room + specialLabel;
+    } else {
+      feedbackContextInput.value = 'Menu';
+    }
+    renderFeedbackTabUI();
+  }
+
+  document.getElementById('btnOpenFeedback').addEventListener('click', () => showScreen('feedback'));
+  document.getElementById('btnCloseFeedback').addEventListener('click', () => showScreen('menu'));
+
+  btnSubmitFeedback.addEventListener('click', async () => {
+    const message = feedbackMessageInput.value.trim();
+    if (!message) {
+      feedbackStatusEl.textContent = '⚠️ Écris un message avant d\'envoyer.';
+      feedbackStatusEl.style.color = '#ff6b9d';
+      return;
+    }
+    if (!cloudEnabled()) {
+      feedbackStatusEl.textContent = '☁️ Envoi impossible : mode local uniquement (aucune URL cloud configurée).';
+      feedbackStatusEl.style.color = '#ff6b9d';
+      return;
+    }
+    btnSubmitFeedback.disabled = true;
+    feedbackStatusEl.textContent = '⏳ Envoi en cours…';
+    feedbackStatusEl.style.color = '#9a9ab5';
+
+    const context = currentFeedbackTab === 'bug' ? feedbackContextInput.value.trim() : '';
+    const result = await submitFeedbackToCloud(currentFeedbackTab, context, message);
+
+    btnSubmitFeedback.disabled = false;
+    if (result.ok) {
+      feedbackStatusEl.textContent = '✅ Merci ! Ton retour a bien été envoyé.';
+      feedbackStatusEl.style.color = '#9a9ab5';
+      feedbackMessageInput.value = '';
+    } else if (result.error === 'rate_limited') {
+      feedbackStatusEl.textContent = '⚠️ Trop de retours envoyés, réessaie dans quelques secondes.';
+      feedbackStatusEl.style.color = '#ff6b9d';
+    } else {
+      feedbackStatusEl.textContent = '⚠️ Envoi impossible (' + result.error + ')';
+      feedbackStatusEl.style.color = '#ff6b9d';
+    }
   });
 
   showScreen('menu');
