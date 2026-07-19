@@ -225,6 +225,8 @@ async function playReversedTrack(src) {
       if (!res.ok || (data && data.error)) {
         if (data && data.error === 'pseudo_taken') {
           setCloudStatus('⚠️ Pseudo déjà pris — choisis-en un autre', true);
+        } else if (data && data.error === 'rate_limited') {
+          setCloudStatus('⚠️ Trop de requêtes, réessaie dans quelques secondes', true);
         } else {
           setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
         }
@@ -1112,6 +1114,7 @@ async function playReversedTrack(src) {
     stopMusic();
     alive = false;
     clearInterval(tickTimer);
+    clearSpecialRoomEffects();
     const metaGain = Math.max(1, Math.floor(score / 10) + room);
     save.meta += metaGain;
     const isRecord = score > save.best;
