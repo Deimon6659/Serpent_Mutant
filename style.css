@@ -332,3 +332,14 @@
   color: #d8b8c8;
   line-height: 1.4;
 }
+
+#feedbackMessageInput,
+#feedbackContextInput,
+#pseudoInput {
+  outline: none;
+}
+#feedbackMessageInput:focus,
+#feedbackContextInput:focus,
+#pseudoInput:focus {
+  border-color: var(--accent) !important;
+}
