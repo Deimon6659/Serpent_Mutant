@@ -129,10 +129,17 @@ function playMusic(trackKey, { reversed = false } = {}) {
 
 // Lecture à l'envers via Web Audio API (pour le niveau Miroir)
 let reversedBufferCache = {};
+let sharedAudioCtx = null;
+function getAudioCtx_() {
+  if (!sharedAudioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    sharedAudioCtx = new AudioContextClass();
+  }
+  return sharedAudioCtx;
+}
 async function playReversedTrack(src) {
   try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AudioContextClass();
+    const audioCtx = getAudioCtx_();
 
     let buffer = reversedBufferCache[src];
     if (!buffer) {
