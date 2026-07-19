@@ -12,6 +12,7 @@
 <p class="subtitle">Un Snake roguelike : traverse les salles, choisis tes mutations, survis le plus longtemps possible.</p>
 
 <div id="topBar">
+  <button id="btnMuteGame" class="secondary hud-btn hidden">🔊</button>
   <button id="btnMenuFromGame" class="secondary hud-btn hidden">☰ Menu</button>
 </div>
 
@@ -49,6 +50,10 @@
       <label for="pseudoInput" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Ton pseudo (affiché dans le classement)</label>
       <input type="text" id="pseudoInput" maxlength="18" placeholder="Anonyme"
         style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit;">
+    </div>
+    <div style="margin: 14px 0; text-align: left;">
+      <label for="volumeSlider" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">🔊 Volume musique</label>
+      <input type="range" id="volumeSlider" min="0" max="100" value="40" style="width: 100%;">
     </div>
     <div id="cloudStatus" style="font-size: 0.75rem; color: #9a9ab5; margin-bottom: 6px; text-align: center;"></div>
     <div class="menuButtons">
