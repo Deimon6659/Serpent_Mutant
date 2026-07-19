@@ -223,9 +223,14 @@ async function playReversedTrack(src) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || (data && data.error)) {
-        setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
+        if (data && data.error === 'pseudo_taken') {
+          setCloudStatus('⚠️ Pseudo déjà pris — choisis-en un autre', true);
+        } else {
+          setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
+        }
       } else {
         setCloudStatus('✅ Score envoyé au classement en ligne');
+        if (data && data.pseudo) lockPseudo(data.pseudo);
       }
     } catch (err) {
       console.warn('Envoi du score au cloud a échoué (le score local reste sauvegardé) :', err);
@@ -252,6 +257,27 @@ async function playReversedTrack(src) {
     } catch (err) {
       console.warn('Sauvegarde des Éclats au cloud a échoué (la sauvegarde locale reste valide) :', err);
       setCloudStatus('⚠️ Synchro Éclats impossible (voir console)', true);
+    }
+  }
+
+  const PSEUDO_REGEX = /^[a-zA-Z0-9_-]{3,18}$/;
+
+  function isPseudoLocked() {
+    return localStorage.getItem('serpentMutant_pseudoLocked') === '1';
+  }
+  function lockPseudo(pseudo) {
+    localStorage.setItem('serpentMutant_pseudo', pseudo);
+    localStorage.setItem('serpentMutant_pseudoLocked', '1');
+  }
+
+  async function checkPseudoAvailable(pseudo) {
+    if (!cloudEnabled()) return { available: true };
+    if (!PSEUDO_REGEX.test(pseudo)) return { available: false, error: 'invalid_format' };
+    try {
+      const res = await fetch(WEBAPP_URL + '?action=checkPseudo&pseudo=' + encodeURIComponent(pseudo));
+      return await res.json();
+    } catch (err) {
+      return { available: true }; // pas bloquant si offline, le serveur validera au submit
     }
   }
 
@@ -557,13 +583,24 @@ async function playReversedTrack(src) {
     globalScores.slice(0, 10).forEach((s, i) => {
       const row = document.createElement('div');
       row.className = 'scoreRow';
-      row.innerHTML = `
-        <div class="rank">${i + 1}</div>
-        <div class="details">
-          <div class="sc">${s.pseudo || 'Anonyme'} — ${s.score} pts</div>
-          <div class="rm">Salle ${s.room} · ${s.difficulty || 'normal'}</div>
-        </div>
-      `;
+
+      const rank = document.createElement('div');
+      rank.className = 'rank';
+      rank.textContent = String(i + 1);
+
+      const details = document.createElement('div');
+      details.className = 'details';
+      const sc = document.createElement('div');
+      sc.className = 'sc';
+      sc.textContent = `${s.pseudo || 'Anonyme'} — ${s.score} pts`;
+      const rm = document.createElement('div');
+      rm.className = 'rm';
+      rm.textContent = `Salle ${s.room} · ${s.difficulty || 'normal'}`;
+      details.appendChild(sc);
+      details.appendChild(rm);
+
+      row.appendChild(rank);
+      row.appendChild(details);
       list.appendChild(row);
     });
   }
@@ -1280,10 +1317,33 @@ async function playReversedTrack(src) {
     });
   }
 
-  document.getElementById('pseudoInput').addEventListener('input', (e) => {
+  const pseudoInputEl = document.getElementById('pseudoInput');
+  const pseudoStatusEl = document.getElementById('pseudoStatus');
+
+  if (isPseudoLocked()) {
+    pseudoInputEl.disabled = true;
+    if (pseudoStatusEl) pseudoStatusEl.textContent = '🔒 Pseudo verrouillé définitivement';
+  }
+
+  let pseudoCheckTimer = null;
+  pseudoInputEl.addEventListener('input', (e) => {
+    if (isPseudoLocked()) return;
     const val = e.target.value.trim();
     if (val) localStorage.setItem('serpentMutant_pseudo', val);
     else localStorage.removeItem('serpentMutant_pseudo');
+
+    if (!pseudoStatusEl) return;
+    clearTimeout(pseudoCheckTimer);
+    if (!val) { pseudoStatusEl.textContent = ''; return; }
+    if (!PSEUDO_REGEX.test(val)) {
+      pseudoStatusEl.textContent = '❌ 3-18 caractères, lettres/chiffres/_/- uniquement';
+      return;
+    }
+    pseudoStatusEl.textContent = '⏳ Vérification…';
+    pseudoCheckTimer = setTimeout(async () => {
+      const result = await checkPseudoAvailable(val);
+      pseudoStatusEl.textContent = result.available ? '✅ Disponible' : '❌ Déjà pris';
+    }, 500);
   });
 
   document.getElementById('btnStart').addEventListener('click', () => {
