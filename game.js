@@ -811,6 +811,8 @@ async function playReversedTrack(src) {
     for (const s of snake) if (s.x === x && s.y === y) return false;
     for (const o of obstacles) if (o.x === x && o.y === y) return false;
     for (const f of food) if (f.x === x && f.y === y) return false;
+    if (currentSpecialRoom === 'ice' && isIceCell(x, y)) return false;
+    if (currentSpecialRoom === 'volcano' && isLavaActive(x, y)) return false;
     return true;
   }
 
@@ -1026,8 +1028,9 @@ async function playReversedTrack(src) {
         ate = true;
         fruitsEatenThisRun++;
         if (shrinkMode) {
-          if (snake.length > 4) { snake.pop(); snake.pop(); }
-          else snake.pop();
+          const MIN_LENGTH = 3;
+          if (snake.length > MIN_LENGTH + 2) { snake.pop(); snake.pop(); }
+          else if (snake.length > MIN_LENGTH) { snake.pop(); }
         }
       }
     }
