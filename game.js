@@ -1,3 +1,13 @@
+/**
+ * ============================================================
+ * Fichier      : game.js
+ * Version      : V1.07
+ * Derniere maj : 20/07/2026 (nouvel audit - bug #28 corrige :
+ *                cellFree() n'excluait que les cases de lave actives, pas
+ *                celles en phase d'avertissement, permettant a un obstacle/
+ *                fruit de spawner sur une case sur le point de devenir mortelle)
+ * ============================================================
+ */
 (() => {
   'use strict';
 
@@ -239,7 +249,11 @@ async function playReversedTrack(src) {
         }
       } else {
         setCloudStatus('✅ Score envoyé au classement en ligne');
-        if (data && data.pseudo) lockPseudo(data.pseudo);
+        // On ne verrouille le pseudo que si le serveur l'a vraiment revendiqué
+        // (claimed=true) : un 'Anonyme' par défaut ne doit jamais se verrouiller,
+        // sinon un seul joueur pourrait monopoliser ce pseudo à vie côté serveur
+        // pendant que tous les autres se verraient injustement verrouillés en local.
+        if (data && data.pseudo && data.claimed) lockPseudo(data.pseudo);
       }
     } catch (err) {
       console.warn('Envoi du score au cloud a échoué (le score local reste sauvegardé) :', err);
@@ -427,7 +441,13 @@ async function playReversedTrack(src) {
     canvas.height = maxW;
     CELL = canvas.width / GRID;
   }
-  window.addEventListener('resize', resizeCanvas);
+  // Debounce : sur mobile, une rotation d'écran ou l'apparition/disparition
+  // de la barre d'adresse peut déclencher plusieurs 'resize' en rafale.
+  let resizeDebounceTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(resizeCanvas, 100);
+  });
   resizeCanvas();
 
   // ============================================================
@@ -675,7 +695,18 @@ async function playReversedTrack(src) {
   // ============================================================
   // Game state
   // ============================================================
-  let snake = [], dir = {x:1,y:0}, nextDir = {x:1,y:0}, food = [], obstacles = [], score = 0, room = 1, alive = false, tickTimer;
+  let snake = [], dir = {x:1,y:0}, nextDir = {x:1,y:0}, food = [], obstacles = [], score = 0, room = 1, alive = false;
+  // Le tick de jeu n'utilise plus setInterval : setInterval est fortement
+  // throttlé (voire suspendu) par le navigateur quand l'onglet passe en
+  // arrière-plan (verrouillage d'écran mobile, changement d'onglet), ce qui
+  // provoquait un rattrapage brutal de plusieurs ticks d'un coup au retour
+  // (le serpent "saute" plusieurs cases, parfois contre un obstacle apparu
+  // entre-temps). À la place, un accumulateur de temps est avancé dans la
+  // boucle requestAnimationFrame (renderLoop), qui elle-même est throttlée
+  // proprement par le navigateur (pas de rattrapage en rafale).
+  let isTicking = false;
+  let tickAccumulator = 0;
+  let lastFrameTime = null;
   let waitingForFirstInput = true;
   let activeMutations = [];
   let shieldCharges = 0;
@@ -724,7 +755,7 @@ async function playReversedTrack(src) {
   let lavaCells = [];            // [{x,y,armedAt}] cases actuellement en lave (niveau volcan) — pour l'affichage
   let lavaCellMap = new Map();   // index "x,y" -> armedAt, lookup O(1) (testé à chaque tick/frame)
   let lavaCyclePositions = [];   // pool de positions candidates pour la lave
-  let lavaCycleTimer = null;
+  let lavaCycleNextAt = null;    // timestamp (performance.now()) du prochain cycle - piloté par la boucle rAF, plus de setInterval
   function cellKey_(x, y) { return x + ',' + y; }
   const LAVA_CYCLE_MS = 2500;    // à quel rythme les zones de lave changent de place
   const LAVA_WARNING_MS = 900;   // temps d'avertissement visuel avant que ça devienne mortel
@@ -736,7 +767,7 @@ async function playReversedTrack(src) {
   }
 
   function clearSpecialRoomEffects() {
-    if (lavaCycleTimer) { clearInterval(lavaCycleTimer); lavaCycleTimer = null; }
+    lavaCycleNextAt = null;
     iceCells = [];
     iceCellSet = new Set();
     lavaCells = [];
@@ -761,7 +792,7 @@ async function playReversedTrack(src) {
   } else if (type === 'volcano') {
     generateLavaCyclePositions();
     cycleLavaZones();
-    lavaCycleTimer = setInterval(cycleLavaZones, LAVA_CYCLE_MS);
+    lavaCycleNextAt = performance.now() + LAVA_CYCLE_MS;
     playMusic('volcano');
   } else if (type === 'mirror') {
     playMusic('classic', { reversed: true });
@@ -814,8 +845,19 @@ async function playReversedTrack(src) {
     const headX = snake && snake[0] ? snake[0].x : 10;
     const headY = snake && snake[0] ? snake[0].y : 10;
     const activeCount = Math.floor(GRID * GRID * 0.05);
+    // Bug #26 : le pool de positions candidates (lavaCyclePositions) est
+    // généré une seule fois au début de la salle Volcan, à un moment où les
+    // obstacles de la salle ne sont pas encore connus par cette fonction
+    // (generateObstaclesForRoom() tourne juste après). Sans ce filtre, un
+    // cycle ultérieur (toutes les 2.5s, en cours de salle) pouvait donc
+    // repositionner une zone de lave exactement sur une case occupée par un
+    // obstacle déjà en place, ou sur un fruit, créant un chevauchement
+    // visuel/logique alors que la garantie "pas de chevauchement" n'était
+    // vérifiée qu'à la génération initiale (bug #13/#25).
     const candidates = lavaCyclePositions.filter(c =>
-      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3)
+      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
+      !obstacles.some(o => o.x === c.x && o.y === c.y) &&
+      !food.some(f => f.x === c.x && f.y === c.y)
     );
     const shuffled = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
@@ -885,7 +927,15 @@ async function playReversedTrack(src) {
     for (const o of obstacles) if (o.x === x && o.y === y) return false;
     for (const f of food) if (f.x === x && f.y === y) return false;
     if (currentSpecialRoom === 'ice' && isIceCell(x, y)) return false;
-    if (currentSpecialRoom === 'volcano' && isLavaActive(x, y)) return false;
+    // Bug #28 : on excluait uniquement isLavaActive(), donc une case de lave
+    // encore en phase d'avertissement (armedAt dans le futur, isLavaActive
+    // renvoie false) était considérée comme libre. Un obstacle ou un fruit
+    // pouvait alors être placé dessus, et ~900ms plus tard cette même case
+    // devenait mortelle (lave active) tout en portant déjà un obstacle/fruit
+    // - chevauchement visuel et logique. On exclut désormais toute case
+    // présente dans lavaCellMap (active OU en avertissement), pas seulement
+    // celles déjà actives.
+    if (currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(x, y))) return false;
     return true;
   }
 
@@ -1127,6 +1177,12 @@ async function playReversedTrack(src) {
   }
 
   function advanceRoom() {
+    // On quitte la salle courante : si c'était une salle Volcan, son cycle de
+    // lave (piloté par lavaCycleNextAt dans la boucle rAF) doit être arrêté ICI,
+    // pas seulement au clic sur une mutation (setupSpecialRoom). Sinon il
+    // continue de tourner et de repositionner les zones de lave pendant tout
+    // l'écran de choix de mutation, alors que le jeu (tick) est lui en pause.
+    lavaCycleNextAt = null;
     room++;
     currentSpecialRoom = rollSpecialRoom();
     updateHud();
@@ -1147,7 +1203,7 @@ async function playReversedTrack(src) {
   };
 
   function showMutationChoice() {
-    clearInterval(tickTimer);
+    stopTicking();
     const choices = pickRandomMutations(3);
     const container = document.getElementById('mutChoices');
     container.innerHTML = '';
@@ -1170,8 +1226,17 @@ async function playReversedTrack(src) {
         activeMutations.push(mut);
         renderMutBar();
         overlayMut.classList.add('hidden');
-        generateObstaclesForRoom();
+        // Bug #25 (audit du 20/07/2026) : setupSpecialRoom() doit être appelé
+        // AVANT generateObstaclesForRoom(). currentSpecialRoom est déjà mis à
+        // jour vers le type de la NOUVELLE salle dès advanceRoom(), mais les
+        // cases givrées/lave (iceCellSet/lavaCellMap) appartenaient encore à
+        // l'ANCIENNE salle tant que setupSpecialRoom() (qui les nettoie et les
+        // régénère) n'avait pas tourné. generateObstaclesForRoom() vérifiait
+        // donc ces cases avec de mauvaises données, et les obstacles pouvaient
+        // ensuite chevaucher les cases givrées/lave fraîchement générées juste
+        // après - cassant la garantie apportée par le fix du bug #13.
         setupSpecialRoom(currentSpecialRoom);
+        generateObstaclesForRoom();
         food = [];
         spawnFood();
         waitingForFirstInput = true;
@@ -1196,7 +1261,7 @@ async function playReversedTrack(src) {
   function endRun() {
     stopMusic();
     alive = false;
-    clearInterval(tickTimer);
+    stopTicking();
     clearSpecialRoomEffects();
     const metaGain = Math.max(1, Math.floor(score / 10) + room);
     save.meta += metaGain;
@@ -1225,6 +1290,7 @@ async function playReversedTrack(src) {
     const bgTheme = getEquippedBackground();
     const colorTheme = getEquippedColor();
     const foodTheme = getEquippedFood();
+    const now = Date.now(); // un seul appel par frame, réutilisé pour la lave, le rainbow, etc.
 
     canvas.style.background = bgTheme.bg;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1243,36 +1309,52 @@ async function playReversedTrack(src) {
     }
     ctx.stroke();
 
-    // Cases spéciales (glace / lave) rendues avant les obstacles et la nourriture
-    if (currentSpecialRoom === 'ice') {
-      iceCells.forEach(c => {
-        ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
-        ctx.strokeStyle = 'rgba(200, 235, 255, 0.6)';
-        ctx.lineWidth = 1;
-        roundRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5);
-        ctx.strokeRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4);
-      });
+    // Cases spéciales (glace / lave) : même principe que la grille, un seul
+    // path regroupant toutes les cases d'une même couleur, un seul fill()/
+    // stroke() par groupe au lieu d'un appel par case (jusqu'à ~24 cases en
+    // salle Volcan/Glace).
+    if (currentSpecialRoom === 'ice' && iceCells.length) {
+      ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
+      ctx.beginPath();
+      iceCells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(200, 235, 255, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      iceCells.forEach(c => ctx.rect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4));
+      ctx.stroke();
     }
-    if (currentSpecialRoom === 'volcano') {
-      const now = Date.now();
+    if (currentSpecialRoom === 'volcano' && lavaCells.length) {
+      const activeCells = [];
+      const blinkOnCells = [];
+      const blinkOffCells = [];
+      const blink = Math.floor(now / 150) % 2 === 0;
       lavaCells.forEach(c => {
-        const active = now >= c.armedAt;
-        if (active) {
-          ctx.fillStyle = '#ff4a2f';
-        } else {
-          // clignote pendant la phase d'avertissement
-          const blink = Math.floor(now / 150) % 2 === 0;
-          ctx.fillStyle = blink ? 'rgba(255, 150, 60, 0.55)' : 'rgba(255, 90, 40, 0.3)';
-        }
-        roundRect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5);
+        if (now >= c.armedAt) activeCells.push(c);
+        else (blink ? blinkOnCells : blinkOffCells).push(c);
       });
+      const fillGroup = (cells, color) => {
+        if (!cells.length) return;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        cells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
+        ctx.fill();
+      };
+      fillGroup(activeCells, '#ff4a2f');
+      fillGroup(blinkOnCells, 'rgba(255, 150, 60, 0.55)');
+      fillGroup(blinkOffCells, 'rgba(255, 90, 40, 0.3)');
     }
 
-    ctx.fillStyle = '#3a3a5c';
-    obstacles.forEach(o => {
-      roundRect(o.x * CELL + 2, o.y * CELL + 2, CELL - 4, CELL - 4, 4);
-    });
+    if (obstacles.length) {
+      ctx.fillStyle = '#3a3a5c';
+      ctx.beginPath();
+      obstacles.forEach(o => addRoundRectPath(o.x * CELL + 2, o.y * CELL + 2, CELL - 4, CELL - 4, 4));
+      ctx.fill();
+    }
 
+    // Le font n'est fixé qu'une fois par frame (pas par fruit) : un même skin
+    // de nourriture est équipé pour tous les fruits normaux d'une frame donnée.
+    let foodFontSet = false;
     food.forEach(f => {
       const cx = f.x * CELL + CELL / 2;
       const cy = f.y * CELL + CELL / 2;
@@ -1285,12 +1367,13 @@ async function playReversedTrack(src) {
         ctx.lineWidth = 2;
         ctx.stroke();
       } else if (foodTheme.emoji) {
-        ctx.font = `${Math.floor(CELL * 0.85)}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        if (!foodFontSet) {
+          ctx.font = `${Math.floor(CELL * 0.85)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          foodFontSet = true;
+        }
         ctx.fillText(foodTheme.emoji, cx, cy + 1);
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
       } else {
         ctx.fillStyle = foodTheme.color;
         ctx.beginPath();
@@ -1298,17 +1381,39 @@ async function playReversedTrack(src) {
         ctx.fill();
       }
     });
+    if (foodFontSet) {
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
 
-    snake.forEach((s, i) => {
-      if (colorTheme.rainbow) {
-        const hue = (i * 25 + Date.now() / 20) % 360;
+    // Segments non-rainbow : même couleur (tête à part, corps groupé) -> un
+    // seul path/fill pour tout le corps au lieu d'un fill par segment.
+    if (colorTheme.rainbow) {
+      snake.forEach((s, i) => {
+        const hue = (i * 25 + now / 20) % 360;
         ctx.fillStyle = `hsl(${hue}, 80%, 62%)`;
-      } else {
-        ctx.fillStyle = i === 0 ? colorTheme.head : colorTheme.body;
+        const pad = i === 0 ? 1 : 2;
+        ctx.beginPath();
+        addRoundRectPath(s.x * CELL + pad, s.y * CELL + pad, CELL - pad * 2, CELL - pad * 2, i === 0 ? 6 : 4);
+        ctx.fill();
+      });
+    } else {
+      if (snake.length > 1) {
+        ctx.fillStyle = colorTheme.body;
+        ctx.beginPath();
+        for (let i = 1; i < snake.length; i++) {
+          const s = snake[i];
+          addRoundRectPath(s.x * CELL + 2, s.y * CELL + 2, CELL - 4, CELL - 4, 4);
+        }
+        ctx.fill();
       }
-      const pad = i === 0 ? 1 : 2;
-      roundRect(s.x * CELL + pad, s.y * CELL + pad, CELL - pad * 2, CELL - pad * 2, i === 0 ? 6 : 4);
-    });
+      if (snake[0]) {
+        ctx.fillStyle = colorTheme.head;
+        ctx.beginPath();
+        addRoundRectPath(snake[0].x * CELL + 1, snake[0].y * CELL + 1, CELL - 2, CELL - 2, 6);
+        ctx.fill();
+      }
+    }
 
     if (shieldCharges > 0 && snake[0]) {
       ctx.strokeStyle = '#ffd93d';
@@ -1320,14 +1425,19 @@ async function playReversedTrack(src) {
       ctx.stroke();
     }
 
-    particles.forEach(p => {
-      ctx.globalAlpha = Math.max(0, p.life / 20);
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-      ctx.fill();
+    if (particles.length) {
+      // Toutes les particules partagent la même forme/taille ; seule la couleur
+      // et l'opacité varient. On les regroupe par couleur pour limiter les
+      // changements de fillStyle, l'opacité restant gérée par particule via globalAlpha.
+      particles.forEach(p => {
+        ctx.globalAlpha = Math.max(0, p.life / 20);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
       ctx.globalAlpha = 1;
-    });
+    }
 
     if (alive && waitingForFirstInput) {
       ctx.fillStyle = 'rgba(10,10,20,0.55)';
@@ -1342,14 +1452,22 @@ async function playReversedTrack(src) {
     }
   }
 
-  function roundRect(x, y, w, h, r) {
-    ctx.beginPath();
+  // Ajoute un rectangle à coins arrondis au path COURANT sans le fill/stroke -
+  // permet de regrouper plusieurs formes de même couleur en un seul appel
+  // fill()/stroke() (voir draw()). roundRect() ci-dessous garde l'ancien
+  // comportement (fill immédiat) pour les appels isolés.
+  function addRoundRectPath(x, y, w, h, r) {
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r);
     ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r);
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    addRoundRectPath(x, y, w, h, r);
     ctx.fill();
   }
 
@@ -1363,23 +1481,63 @@ async function playReversedTrack(src) {
     }
   }
 
-  function renderLoop() {
-    updateParticles();
-    if (!menuOverlay.classList.contains('hidden')) {
-      // idle on menu - nothing to draw on canvas (hidden anyway)
-    } else {
+  // Nombre max de ticks rattrapés en une seule frame après une grosse pause
+  // (onglet en arrière-plan, verrouillage d'écran). Au-delà, on laisse
+  // filer le temps plutôt que de faire rejouer plusieurs secondes de jeu
+  // d'un coup - le joueur n'a de toute façon pas pu réagir pendant ce temps.
+  const MAX_CATCHUP_TICKS = 3;
+
+  function renderLoop(now) {
+    if (lastFrameTime === null) lastFrameTime = now;
+    let dt = now - lastFrameTime;
+    lastFrameTime = now;
+    // Sécurité si dt est énorme (retour d'un onglet en veille depuis longtemps)
+    if (dt > 1000) dt = 1000;
+
+    if (isTicking) {
+      tickAccumulator += dt;
+      let ticksThisFrame = 0;
+      while (tickAccumulator >= baseTickMs && ticksThisFrame < MAX_CATCHUP_TICKS) {
+        step();
+        tickAccumulator -= baseTickMs;
+        ticksThisFrame++;
+        if (!isTicking) break; // step() peut déclencher endRun()/showMutationChoice() -> stopTicking()
+      }
+      // Évite d'accumuler indéfiniment si on a plafonné le rattrapage
+      if (tickAccumulator > baseTickMs * MAX_CATCHUP_TICKS) tickAccumulator = baseTickMs;
+
+      // Cycle des zones de lave (salle Volcan) : piloté par la même horloge
+      // rAF plutôt qu'un setInterval séparé, pour rester cohérent avec le
+      // reste de la boucle de jeu et éviter toute dérive de timer en arrière-plan.
+      if (currentSpecialRoom === 'volcano' && lavaCycleNextAt !== null && now >= lavaCycleNextAt) {
+        cycleLavaZones();
+        lavaCycleNextAt = now + LAVA_CYCLE_MS;
+      }
+    }
+
+    // Bug #24 (audit du 20/07/2026) : cette condition ne vérifiait que
+    // menuOverlay, donc draw() (et updateParticles()) continuaient de
+    // tourner à chaque frame même sur les écrans Boutique/Scores/
+    // Difficulté/Feedback, alors que le canvas (#gameWrap) y est masqué
+    // (display:none) - travail inutile à 60x/s pour un rendu invisible.
+    // Le canvas ne reste visible que sur l'écran de jeu (y compris les
+    // overlays de mutation/game over, qui se superposent SANS masquer
+    // #gameWrap). On se base donc sur la visibilité réelle de #gameWrap.
+    if (!gameWrap.classList.contains('hidden')) {
+      updateParticles();
       draw();
     }
     requestAnimationFrame(renderLoop);
   }
 
   function startTicking() {
-    clearInterval(tickTimer);
-    tickTimer = setInterval(step, baseTickMs);
+    isTicking = true;
+    tickAccumulator = 0;
+    lastFrameTime = null; // évite un gros dt calculé contre le timestamp d'avant la pause
   }
 
   function stopTicking() {
-    clearInterval(tickTimer);
+    isTicking = false;
   }
 
   // ============================================================
@@ -1479,6 +1637,12 @@ async function playReversedTrack(src) {
     // pause/abandon current run and return to menu without counting it as a loss twice
     stopTicking();
     alive = false;
+    // Sans ça, quitter un run en cours de salle Volcan laissait lavaCycleTimer
+    // tourner indéfiniment en arrière-plan (fuite de timer), et la musique de
+    // la salle spéciale (glace/volcan/miroir inversé) continuait de jouer une
+    // fois revenu au menu au lieu de s'arrêter.
+    stopMusic();
+    clearSpecialRoomEffects();
     showScreen('menu');
   });
 
@@ -1568,5 +1732,5 @@ async function playReversedTrack(src) {
   });
 
   showScreen('menu');
-  renderLoop();
+  requestAnimationFrame(renderLoop);
 })();
