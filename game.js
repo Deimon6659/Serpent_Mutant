@@ -1,8 +1,18 @@
 /**
  * ============================================================
  * Fichier      : game.js
- * Version      : V1.10
- * Derniere maj : 21/07/2026 (3e audit du 21/07/2026 - bug #34 corrige :
+ * Version      : V1.11
+ * Derniere maj : 22/07/2026 (bug #35 corrige :
+ *                L'ecran Scores restait blanc sur nouveau PC (localStorage vide).
+ *                showScreen('scores') affichait l'overlay APRES renderScores(),
+ *                donc tout throw cachait l'overlay pour toujours. De plus,
+ *                renderScores() retournait prematurement si topScores vide,
+ *                empechant renderGlobalScores() de s'executer — le classement
+ *                global n'etait jamais affiche pour un nouveau joueur.
+ *                Fix 1 : overlay affiche AVANT renderScores(). Fix 2 : return
+ *                premature remplace par else, renderGlobalScores() toujours appele.)
+ * — Historique precedent :
+ *   V1.10 / 3e audit du 21/07/2026 - bug #34 corrige :
  *                #34 : playReversedTrack() ne reprenait pas l'AudioContext avant
  *                source.start(0). Si le navigateur l'avait suspendu (onglet en
  *                arriere-plan), la salle Miroir devenait silencieuse au retour.
@@ -529,8 +539,8 @@ async function playReversedTrack(src) {
       renderShop();
       shopOverlay.classList.remove('hidden');
     } else if (name === 'scores') {
-      renderScores();
       scoresOverlay.classList.remove('hidden');
+      renderScores();
     } else if (name === 'feedback') {
       openFeedbackScreen();
       feedbackOverlay.classList.remove('hidden');
@@ -647,21 +657,21 @@ async function playReversedTrack(src) {
       .slice(0, 5);
     if (scores.length === 0) {
       list.innerHTML = '<div class="emptyScores">Aucun score enregistré pour l’instant. Lance un run !</div>';
-      return;
+    } else {
+      scores.forEach((s, i) => {
+        const row = document.createElement('div');
+        row.className = 'scoreRow';
+        const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i] || (i + 1);
+        row.innerHTML = `
+          <div class="rank">${medal}</div>
+          <div class="details">
+            <div class="sc">${s.score} pts</div>
+            <div class="rm">Salle ${s.room}</div>
+          </div>
+        `;
+        list.appendChild(row);
+      });
     }
-    scores.forEach((s, i) => {
-      const row = document.createElement('div');
-      row.className = 'scoreRow';
-      const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i] || (i + 1);
-      row.innerHTML = `
-        <div class="rank">${medal}</div>
-        <div class="details">
-          <div class="sc">${s.score} pts</div>
-          <div class="rm">Salle ${s.room}</div>
-        </div>
-      `;
-      list.appendChild(row);
-    });
 
     renderGlobalScores();
   }
