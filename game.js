@@ -1,11 +1,23 @@
 /**
  * ============================================================
  * Fichier      : game.js
- * Version      : V1.07
- * Derniere maj : 20/07/2026 (nouvel audit - bug #28 corrige :
- *                cellFree() n'excluait que les cases de lave actives, pas
- *                celles en phase d'avertissement, permettant a un obstacle/
- *                fruit de spawner sur une case sur le point de devenir mortelle)
+ * Version      : V1.10
+ * Derniere maj : 21/07/2026 (3e audit du 21/07/2026 - bug #34 corrige :
+ *                #34 : playReversedTrack() ne reprenait pas l'AudioContext avant
+ *                source.start(0). Si le navigateur l'avait suspendu (onglet en
+ *                arriere-plan), la salle Miroir devenait silencieuse au retour.
+ *                Corrige par await audioCtx.resume() avant source.start(0).)
+ * — Historique precedent :
+ *   V1.09 / 2e audit du 21/07/2026 - bugs #32 et #33 corriges :
+ *                #32 : querySelectorAll('.shopTab') selectionnait aussi les onglets
+ *                Feedback (meme classe CSS). Cliquer un onglet Feedback mettait
+ *                currentShopTab = undefined, vidait l'etat actif des onglets boutique
+ *                et appelait renderShop() a tort — a la prochaine ouverture de la
+ *                boutique, aucun onglet actif, grille 'Fonds' affichee au lieu de
+ *                'Couleurs'. Selecteur remplace par [data-tab].
+ *                #33 (cote client) : le handler pseudo n'interceptait pas la saisie
+ *                'Anonyme' — le serveur renvoyait 'reserved' mais le client affichait
+ *                generiquement 'Deja pris'. Detection locale ajoutee + message dedie.)
  * ============================================================
  */
 (() => {
@@ -171,6 +183,12 @@ async function playReversedTrack(src) {
     gainNode.gain.value = musicVolume;
     source.connect(gainNode);
     gainNode.connect(audioCtx.destination);
+    // Bug #34 (3e audit du 21/07/2026) : si le navigateur avait suspendu
+    // l'AudioContext (onglet passé en arrière-plan puis revenu), source.start(0)
+    // mettait la source en file d'attente sans produire de son — l'API Web Audio
+    // exige un appel explicite à audioCtx.resume() avant source.start(), alors que
+    // les éléments <audio> classiques gèrent cette reprise implicitement.
+    await audioCtx.resume();
     source.start(0);
 
     currentAudio = { pause: () => source.stop(), currentTime: 0, gainNode };
@@ -530,10 +548,18 @@ async function playReversedTrack(src) {
   // ============================================================
   let currentShopTab = 'colors';
 
-  document.querySelectorAll('.shopTab').forEach(tabEl => {
+  // Bug #32 (2e audit du 21/07/2026) : '.shopTab' selectionnait aussi les onglets du
+  // formulaire Feedback qui partagent la meme classe CSS pour le style. Cliquer un
+  // onglet Feedback declenchait ce handler, mettait currentShopTab = undefined (ces
+  // onglets n'ont pas d'attribut data-tab), supprimait le marquage 'active' de tous
+  // les onglets boutique, et appelait renderShop() inutilement. A la prochaine
+  // ouverture de la boutique, aucun onglet n'etait marque actif et la grille affichait
+  // 'Fonds' (valeur par defaut de shopCatalog(undefined)) au lieu de 'Couleurs'.
+  // Corrige en ciblant [data-tab] : seuls les onglets boutique ont cet attribut.
+  document.querySelectorAll('[data-tab]').forEach(tabEl => {
     tabEl.addEventListener('click', () => {
       currentShopTab = tabEl.dataset.tab;
-      document.querySelectorAll('.shopTab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
       tabEl.classList.add('active');
       renderShop();
     });
@@ -1131,12 +1157,27 @@ async function playReversedTrack(src) {
       slideQueue = 1 + Math.floor(Math.random() * 2); // 1 ou 2 cases
     }
 
+    // Bug #29 : le deplacement magnetique des fruits ne verifiait pas si la
+    // case cible etait libre. Un fruit pouvait etre pousse sur un obstacle
+    // (fruit inaccessible, bloque a vie), sur un autre fruit (superposition
+    // invisible — le fruit interieur ne peut plus etre mange), sur un segment
+    // du corps du serpent, ou sur une case de lave/avertissement en salle
+    // Volcan (forcant le joueur a marcher dans la lave pour manger le fruit).
+    // On calcule la case cible et on ne deplace le fruit que si elle est libre.
     if (magnetActive) {
       for (const f of food) {
         const d = Math.abs(f.x - head.x) + Math.abs(f.y - head.y);
         if (d <= 4 && d > 0 && Math.random() < 0.3) {
-          if (f.x < head.x) f.x++; else if (f.x > head.x) f.x--;
-          if (f.y < head.y) f.y++; else if (f.y > head.y) f.y--;
+          const nx = f.x < head.x ? f.x + 1 : (f.x > head.x ? f.x - 1 : f.x);
+          const ny = f.y < head.y ? f.y + 1 : (f.y > head.y ? f.y - 1 : f.y);
+          if (nx !== f.x || ny !== f.y) {
+            let ok = true;
+            for (const s of snake) { if (s.x === nx && s.y === ny) { ok = false; break; } }
+            if (ok) for (const o of obstacles) { if (o.x === nx && o.y === ny) { ok = false; break; } }
+            if (ok) for (const g of food) { if (g !== f && g.x === nx && g.y === ny) { ok = false; break; } }
+            if (ok && currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(nx, ny))) ok = false;
+            if (ok) { f.x = nx; f.y = ny; }
+          }
         }
       }
     }
@@ -1189,11 +1230,24 @@ async function playReversedTrack(src) {
     showMutationChoice();
   }
 
+  // Bug #30 : quand notTaken.length < n (moins de 3 mutations disponibles,
+  // cas des runs depassant 6 salles), le code basculait sur MUTATION_POOL
+  // entier. Meme quand 1 ou 2 mutations non prises existaient encore, elles
+  // n'etaient pas garanties dans le tirage — le joueur pouvait recevoir
+  // 3 mutations deja actives alors qu'il en restait des nouvelles disponibles.
+  // On priorise desormais toujours les mutations non prises, et on ne complete
+  // avec des mutations deja actives que si le nombre de slots restants l'exige.
   function pickRandomMutations(n) {
     const notTaken = MUTATION_POOL.filter(m => !activeMutations.find(a => a.id === m.id));
-    const pool = notTaken.length >= n ? notTaken : MUTATION_POOL;
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, n);
+    if (notTaken.length >= n) {
+      return [...notTaken].sort(() => Math.random() - 0.5).slice(0, n);
+    }
+    // Moins de n mutations non prises : on les prend toutes, puis on complete
+    // avec des mutations deja actives (effets cumulables ou idempotents).
+    const shuffledNotTaken = [...notTaken].sort(() => Math.random() - 0.5);
+    const takenPool = MUTATION_POOL.filter(m => activeMutations.find(a => a.id === m.id));
+    const shuffledTaken = [...takenPool].sort(() => Math.random() - 0.5);
+    return [...shuffledNotTaken, ...shuffledTaken].slice(0, n);
   }
 
   const SPECIAL_ROOM_INFO = {
@@ -1598,10 +1652,24 @@ async function playReversedTrack(src) {
       pseudoStatusEl.textContent = '❌ 3-18 caractères, lettres/chiffres/_/- uniquement';
       return;
     }
+    // Bug #33 (2e audit du 21/07/2026) : 'Anonyme' (et variantes de casse) est le
+    // pseudo par defaut envoye quand le champ est vide ; il ne peut jamais etre
+    // revendique cote serveur. On l'intercepte ici avant l'appel reseau pour eviter
+    // l'affichage trompeur '✅ Disponible' et donner un message explicite.
+    if (val.toLowerCase() === 'anonyme') {
+      pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
+      return;
+    }
     pseudoStatusEl.textContent = '⏳ Vérification…';
     pseudoCheckTimer = setTimeout(async () => {
       const result = await checkPseudoAvailable(val);
-      pseudoStatusEl.textContent = result.available ? '✅ Disponible' : '❌ Déjà pris';
+      if (result.available) {
+        pseudoStatusEl.textContent = '✅ Disponible';
+      } else if (result.error === 'reserved') {
+        pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
+      } else {
+        pseudoStatusEl.textContent = '❌ Déjà pris';
+      }
     }, 500);
   });
 
