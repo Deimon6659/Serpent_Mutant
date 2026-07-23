@@ -1,58 +1,22 @@
 /**
  * ============================================================
  * Fichier      : game.js
- * Version      : V1.14
- * Derniere maj : 23/07/2026 (ajout ecran Reglages : remap des 4 touches
- *                de deplacement (Haut/Bas/Gauche/Droite). Les fleches
- *                directionnelles restent toujours actives en parallele.
- *                Persistance localStorage (serpentMutant_keybindings).
- *                Mode capture : clic 'Changer' -> keydown -> sauvegarde.
- *                Desactivation automatique de la capture si l'overlay
- *                est masque avant la frappe (navigation rapide).
- *                Deduplication : assigner une touche deja prise par une
- *                autre direction vide ce slot sans erreur.)
+ * Version      : V1.15
+ * Derniere maj : 23/07/2026 (audit du 23/07/2026 - bugs #41, #42, #43,
+ *                #46, #47 corriges :
+ *                #41 : crash au chargement si #btnStart absent de index.html
+ *                protege par une verification defensive.
+ *                #42 : ré-initialisation propre du mode capture de touches
+ *                lors du clic sur 'Changer' dans les Réglages pour éviter
+ *                l'affichage orphelin de '…' / '?'.
+ *                #43 : verification defensive sur #shopMetaVal dans
+ *                refreshTopHud() pour eviter toute exception DOM.
+ *                #46 : affichage majuscule des touches a lettre unique dans
+ *                l'ecran des reglages (ex: 'W' au lieu de 'w').
+ *                #47 : seuil minimum de deplacement ajoute au swipe tactile
+ *                pour eviter les faux changements de direction sur tap.)
  * — Historique precedent :
- *   V1.13 / 23/07/2026 - bug #40 corrige :
- *                playReversedTrack() est async et enchaîne plusieurs await
- *                (fetch, arrayBuffer, decodeAudioData, resume). Si stopMusic()
- *                était appelé pendant l'un de ces await — connexion lente
- *                lors de la première entrée en salle Miroir, ou quitter la
- *                salle rapidement (endRun, btnMenuFromGame, changement de piste)
- *                — currentAudio était mis à null mais le chargement continuait
- *                en arrière-plan. À la fin, source.start(0) s'exécutait quand
- *                même et réaffectait currentAudio : musique zombie impossible à
- *                arrêter. Corrigé par un compteur _musicGeneration incrémenté
- *                par stopMusic() ; playReversedTrack() capture la génération
- *                avant les await et s'annule silencieusement si elle a changé.
- *                Ajout d'un try/catch sur source.stop() dans la lambda pause
- *                (InvalidStateError possible si la source est déjà stoppée).)
- * — Historique precedent :
- *   V1.11 / 22/07/2026 - bug #35 corrige :
- *                L'ecran Scores restait blanc sur nouveau PC (localStorage vide).
- *                showScreen('scores') affichait l'overlay APRES renderScores(),
- *                donc tout throw cachait l'overlay pour toujours. De plus,
- *                renderScores() retournait prematurement si topScores vide,
- *                empechant renderGlobalScores() de s'executer — le classement
- *                global n'etait jamais affiche pour un nouveau joueur.
- *                Fix 1 : overlay affiche AVANT renderScores(). Fix 2 : return
- *                premature remplace par else, renderGlobalScores() toujours appele.)
- * — Historique precedent :
- *   V1.10 / 3e audit du 21/07/2026 - bug #34 corrige :
- *                #34 : playReversedTrack() ne reprenait pas l'AudioContext avant
- *                source.start(0). Si le navigateur l'avait suspendu (onglet en
- *                arriere-plan), la salle Miroir devenait silencieuse au retour.
- *                Corrige par await audioCtx.resume() avant source.start(0).)
- * — Historique precedent :
- *   V1.09 / 2e audit du 21/07/2026 - bugs #32 et #33 corriges :
- *                #32 : querySelectorAll('.shopTab') selectionnait aussi les onglets
- *                Feedback (meme classe CSS). Cliquer un onglet Feedback mettait
- *                currentShopTab = undefined, vidait l'etat actif des onglets boutique
- *                et appelait renderShop() a tort — a la prochaine ouverture de la
- *                boutique, aucun onglet actif, grille 'Fonds' affichee au lieu de
- *                'Couleurs'. Selecteur remplace par [data-tab].
- *                #33 (cote client) : le handler pseudo n'interceptait pas la saisie
- *                'Anonyme' — le serveur renvoyait 'reserved' mais le client affichait
- *                generiquement 'Deja pris'. Detection locale ajoutee + message dedie.)
+ *   V1.14 / 23/07/2026 - ajout ecran Reglages & remap
  * ============================================================
  */
 (() => {
@@ -78,7 +42,6 @@
       const raw = localStorage.getItem(SAVE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // merge with defaults to survive schema changes gracefully
         const d = defaultSave();
         return {
           best: typeof parsed.best === 'number' ? parsed.best : d.best,
@@ -97,7 +60,6 @@
         };
       }
     } catch (e) {}
-    // legacy save migration (v1 had only best/meta)
     try {
       const legacy = localStorage.getItem('serpentMutant_save_v1');
       if (legacy) {
@@ -143,155 +105,129 @@
   let keyBindings = loadBindings();
   let capturingDir = null;
 
-// ============================================================
-// Musique de fond
-// ============================================================
-const MUSIC_TRACKS = {
-  classic: 'audio/theme-classic.mp3',
-  ice: 'audio/theme-ice.mp3',
-  volcano: 'audio/theme-volcano.mp3'
-};
+  // ============================================================
+  // Musique de fond
+  // ============================================================
+  const MUSIC_TRACKS = {
+    classic: 'audio/theme-classic.mp3',
+    ice: 'audio/theme-ice.mp3',
+    volcano: 'audio/theme-volcano.mp3'
+  };
 
-let currentAudio = null;
-let musicEnabled = localStorage.getItem('serpentMutant_muted') !== '1';
-let musicVolume = (() => {
-  const v = parseFloat(localStorage.getItem('serpentMutant_volume'));
-  return isNaN(v) ? 0.4 : v;
-})();
-let lastPlayedTrack = null; // {trackKey, reversed} - pour reprise après unmute
-// Bug #40 : compteur de génération incrémenté par stopMusic() pour annuler
-// tout playReversedTrack() en cours de chargement (async). Permet de détecter
-// qu'un stopMusic() est survenu entre deux await et d'interrompre proprement.
-let _musicGeneration = 0;
+  let currentAudio = null;
+  let musicEnabled = localStorage.getItem('serpentMutant_muted') !== '1';
+  let musicVolume = (() => {
+    const v = parseFloat(localStorage.getItem('serpentMutant_volume'));
+    return isNaN(v) ? 0.4 : v;
+  })();
+  let lastPlayedTrack = null;
+  let _musicGeneration = 0;
 
-function setMusicVolume(v) {
-  musicVolume = Math.max(0, Math.min(1, v));
-  localStorage.setItem('serpentMutant_volume', String(musicVolume));
-  if (currentAudio && currentAudio.gainNode) {
-    currentAudio.gainNode.gain.value = musicVolume;
-  } else if (currentAudio && typeof currentAudio.volume === 'number') {
-    currentAudio.volume = musicVolume;
+  function setMusicVolume(v) {
+    musicVolume = Math.max(0, Math.min(1, v));
+    localStorage.setItem('serpentMutant_volume', String(musicVolume));
+    if (currentAudio && currentAudio.gainNode) {
+      currentAudio.gainNode.gain.value = musicVolume;
+    } else if (currentAudio && typeof currentAudio.volume === 'number') {
+      currentAudio.volume = musicVolume;
+    }
   }
-}
 
-function setMusicMuted(muted) {
-  musicEnabled = !muted;
-  localStorage.setItem('serpentMutant_muted', muted ? '1' : '0');
-  if (muted) {
+  function setMusicMuted(muted) {
+    musicEnabled = !muted;
+    localStorage.setItem('serpentMutant_muted', muted ? '1' : '0');
+    if (muted) {
+      stopMusic();
+    } else if (lastPlayedTrack) {
+      playMusic(lastPlayedTrack.trackKey, { reversed: lastPlayedTrack.reversed });
+    }
+  }
+
+  function stopMusic() {
+    _musicGeneration++;
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+      currentAudio = null;
+    }
+  }
+
+  function playMusic(trackKey, { reversed = false } = {}) {
+    lastPlayedTrack = { trackKey, reversed };
+    if (!musicEnabled) return;
     stopMusic();
-  } else if (lastPlayedTrack) {
-    playMusic(lastPlayedTrack.trackKey, { reversed: lastPlayedTrack.reversed });
-  }
-}
 
-function stopMusic() {
-  // Bug #40 : invalide tout playReversedTrack() en cours de chargement async.
-  // playReversedTrack() capture _musicGeneration avant ses await et compare
-  // après chaque point de suspension — si la valeur a changé, il s'annule.
-  _musicGeneration++;
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
-  }
-}
+    const src = MUSIC_TRACKS[trackKey];
+    if (!src) return;
 
-function playMusic(trackKey, { reversed = false } = {}) {
-  lastPlayedTrack = { trackKey, reversed };
-  if (!musicEnabled) return;
-  stopMusic();
-
-  const src = MUSIC_TRACKS[trackKey];
-  if (!src) return;
-
-  if (reversed) {
-    playReversedTrack(src);
-    return;
-  }
-
-  const audio = new Audio(src);
-  audio.loop = true;
-  audio.volume = musicVolume;
-  audio.play().catch(() => {
-    // Lecture bloquée par le navigateur tant qu'aucune interaction utilisateur
-    // n'a eu lieu sur la page - se reproduira au prochain clic/touche.
-  });
-  currentAudio = audio;
-}
-
-// Lecture à l'envers via Web Audio API (pour le niveau Miroir)
-let reversedBufferCache = {};
-let sharedAudioCtx = null;
-function getAudioCtx_() {
-  if (!sharedAudioCtx) {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    sharedAudioCtx = new AudioContextClass();
-  }
-  return sharedAudioCtx;
-}
-async function playReversedTrack(src) {
-  // Bug #40 : on capture la génération AVANT les await. Si stopMusic() est
-  // appelé pendant le chargement (connexion lente, quitter la salle Miroir
-  // rapidement, endRun, changement de piste…), _musicGeneration est incrémenté
-  // et chaque vérification post-await détecte l'annulation et retourne
-  // silencieusement — évitant ainsi tout démarrage de source "zombie" après
-  // que currentAudio ait été mis à null par stopMusic().
-  const myGeneration = _musicGeneration;
-  try {
-    const audioCtx = getAudioCtx_();
-
-    let buffer = reversedBufferCache[src];
-    if (!buffer) {
-      const response = await fetch(src);
-      if (myGeneration !== _musicGeneration) return; // annulé pendant le fetch
-      const arrayBuffer = await response.arrayBuffer();
-      if (myGeneration !== _musicGeneration) return; // annulé pendant arrayBuffer()
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      if (myGeneration !== _musicGeneration) return; // annulé pendant decodeAudioData()
-      // Inverse chaque canal audio
-      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-        decoded.getChannelData(ch).reverse();
-      }
-      buffer = decoded;
-      reversedBufferCache[src] = buffer;
-    } else if (myGeneration !== _musicGeneration) {
-      return; // annulé alors que le buffer était déjà en cache
+    if (reversed) {
+      playReversedTrack(src);
+      return;
     }
 
-    const source = audioCtx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    const gainNode = audioCtx.createGain();
-    gainNode.gain.value = musicVolume;
-    source.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    // Bug #34 (3e audit du 21/07/2026) : si le navigateur avait suspendu
-    // l'AudioContext (onglet passé en arrière-plan puis revenu), source.start(0)
-    // mettait la source en file d'attente sans produire de son — l'API Web Audio
-    // exige un appel explicite à audioCtx.resume() avant source.start(), alors que
-    // les éléments <audio> classiques gèrent cette reprise implicitement.
-    await audioCtx.resume();
-    if (myGeneration !== _musicGeneration) return; // annulé pendant resume()
-    source.start(0);
-
-    currentAudio = {
-      // try/catch : source.stop() peut lancer InvalidStateError si la source
-      // est déjà stoppée (appel défensif en double, nœud détruit, etc.)
-      pause: () => { try { source.stop(); } catch (e) {} },
-      currentTime: 0,
-      gainNode
-    };
-  } catch (err) {
-    console.warn('Lecture inversée impossible :', err);
+    const audio = new Audio(src);
+    audio.loop = true;
+    audio.volume = musicVolume;
+    audio.play().catch(() => {});
+    currentAudio = audio;
   }
-}
+
+  let reversedBufferCache = {};
+  let sharedAudioCtx = null;
+  function getAudioCtx_() {
+    if (!sharedAudioCtx) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      sharedAudioCtx = new AudioContextClass();
+    }
+    return sharedAudioCtx;
+  }
+  async function playReversedTrack(src) {
+    const myGeneration = _musicGeneration;
+    try {
+      const audioCtx = getAudioCtx_();
+
+      let buffer = reversedBufferCache[src];
+      if (!buffer) {
+        const response = await fetch(src);
+        if (myGeneration !== _musicGeneration) return;
+        const arrayBuffer = await response.arrayBuffer();
+        if (myGeneration !== _musicGeneration) return;
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+        if (myGeneration !== _musicGeneration) return;
+        for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+          decoded.getChannelData(ch).reverse();
+        }
+        buffer = decoded;
+        reversedBufferCache[src] = buffer;
+      } else if (myGeneration !== _musicGeneration) {
+        return;
+      }
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = musicVolume;
+      source.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      await audioCtx.resume();
+      if (myGeneration !== _musicGeneration) return;
+      source.start(0);
+
+      currentAudio = {
+        pause: () => { try { source.stop(); } catch (e) {} },
+        currentTime: 0,
+        gainNode
+      };
+    } catch (err) {
+      console.warn('Lecture inversée impossible :', err);
+    }
+  }
+
   // ============================================================
-  // Cloud backend (Google Sheets + Apps Script) - optional
+  // Cloud backend
   // ============================================================
-  // Colle ici l'URL de ta Web App Apps Script (voir le tuto fourni).
-  // Tant que cette URL n'est pas renseignée, tout fonctionne normalement
-  // en local (localStorage) et les appels cloud sont simplement ignorés.
-  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec'; // ex: 'https://script.google.com/macros/s/AKfycb.../exec'
+  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec';
 
   function getOrCreatePlayerId() {
     let id = localStorage.getItem('serpentMutant_playerId');
@@ -319,8 +255,6 @@ async function playReversedTrack(src) {
   }
 
   function updateCloudStatusIdle() {
-    // Don't overwrite a recent error message right away - give the player
-    // time to actually read it when they land back on the menu.
     if (Date.now() - lastCloudErrorTimestamp < CLOUD_ERROR_DISPLAY_MS) return;
     if (!cloudEnabled()) {
       setCloudStatus('☁️ Mode local uniquement (aucune URL cloud configurée)');
@@ -334,7 +268,7 @@ async function playReversedTrack(src) {
     try {
       const res = await fetch(WEBAPP_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // évite le preflight CORS qui bloque Apps Script
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'submitScore',
           playerId: PLAYER_ID,
@@ -356,15 +290,11 @@ async function playReversedTrack(src) {
         }
       } else {
         setCloudStatus('✅ Score envoyé au classement en ligne');
-        // On ne verrouille le pseudo que si le serveur l'a vraiment revendiqué
-        // (claimed=true) : un 'Anonyme' par défaut ne doit jamais se verrouiller,
-        // sinon un seul joueur pourrait monopoliser ce pseudo à vie côté serveur
-        // pendant que tous les autres se verraient injustement verrouillés en local.
         if (data && data.pseudo && data.claimed) lockPseudo(data.pseudo);
       }
     } catch (err) {
-      console.warn('Envoi du score au cloud a échoué (le score local reste sauvegardé) :', err);
-      setCloudStatus('⚠️ Envoi au cloud impossible (voir console)', true);
+      console.warn('Envoi du score au cloud a échoué :', err);
+      setCloudStatus('⚠️ Envoi au cloud impossible', true);
     }
   }
 
@@ -411,8 +341,8 @@ async function playReversedTrack(src) {
         setCloudStatus('⚠️ Éclats non synchronisés (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
       }
     } catch (err) {
-      console.warn('Sauvegarde des Éclats au cloud a échoué (la sauvegarde locale reste valide) :', err);
-      setCloudStatus('⚠️ Synchro Éclats impossible (voir console)', true);
+      console.warn('Sauvegarde des Éclats au cloud a échoué :', err);
+      setCloudStatus('⚠️ Synchro Éclats impossible', true);
     }
   }
 
@@ -433,7 +363,7 @@ async function playReversedTrack(src) {
       const res = await fetch(WEBAPP_URL + '?action=checkPseudo&pseudo=' + encodeURIComponent(pseudo));
       return await res.json();
     } catch (err) {
-      return { available: true }; // pas bloquant si offline, le serveur validera au submit
+      return { available: true };
     }
   }
 
@@ -449,11 +379,10 @@ async function playReversedTrack(src) {
       return Array.isArray(data) ? data : [];
     } catch (err) {
       console.warn('Impossible de récupérer le classement global :', err);
-      setCloudStatus('⚠️ Classement global inaccessible (voir console)', true);
+      setCloudStatus('⚠️ Classement global inaccessible', true);
       return [];
     }
   }
-
 
   function addTopScore(score, room) {
     save.topScores.push({ score, room, date: Date.now() });
@@ -508,9 +437,6 @@ async function playReversedTrack(src) {
     return tab === 'colors' ? 'color' : tab === 'foods' ? 'food' : 'background';
   }
 
-  // Cache des objets équipés : évite un .find() sur les catalogues shop
-  // à CHAQUE frame de draw() (appelé 60x/s). Invalidé uniquement quand
-  // l'équipement change réellement (renderShop / achat).
   let _equippedColorCache = null, _equippedColorId = null;
   let _equippedFoodCache = null, _equippedFoodId = null;
   let _equippedBgCache = null, _equippedBgId = null;
@@ -547,23 +473,13 @@ async function playReversedTrack(src) {
     canvas.width = maxW;
     canvas.height = maxW;
     CELL = canvas.width / GRID;
-    // Bug #36 : en jeu, un changement d'orientation (passage paysage ↔ portrait
-    // sur mobile) redimensionnait le canvas mais ne mettait pas à jour la
-    // visibilité des boutons directionnels. Si le joueur démarrait en paysage
-    // (> 640 px, sans contrôles tactiles), les boutons n'apparaissaient jamais
-    // après rotation en portrait — et vice-versa. On lit les nœuds via
-    // getElementById (accès sûr même lors de l'appel synchrone initial au
-    // chargement, avant l'initialisation des variables const gameWrap et
-    // touchControls) et on ajuste l'affichage uniquement quand le canvas
-    // est visible (écran de jeu actif).
     const gw = document.getElementById('gameWrap');
     const tc = document.getElementById('touchControls');
     if (gw && tc && !gw.classList.contains('hidden')) {
       tc.style.display = window.innerWidth <= 640 ? 'grid' : 'none';
     }
   }
-  // Debounce : sur mobile, une rotation d'écran ou l'apparition/disparition
-  // de la barre d'adresse peut déclencher plusieurs 'resize' en rafale.
+
   let resizeDebounceTimer = null;
   window.addEventListener('resize', () => {
     clearTimeout(resizeDebounceTimer);
@@ -594,12 +510,16 @@ async function playReversedTrack(src) {
   const feedbackOverlay = document.getElementById('feedbackOverlay');
   const settingsOverlay = document.getElementById('settingsOverlay');
 
+  // Bug #43 : Accès defensif sur shopMetaVal
   function refreshTopHud() {
-    bestVal.textContent = save.best;
-    metaVal.textContent = save.meta;
-    document.getElementById('statBest').textContent = save.best;
-    document.getElementById('statMeta').textContent = save.meta;
-    document.getElementById('shopMetaVal').textContent = save.meta;
+    if (bestVal) bestVal.textContent = save.best;
+    if (metaVal) metaVal.textContent = save.meta;
+    const statBest = document.getElementById('statBest');
+    if (statBest) statBest.textContent = save.best;
+    const statMeta = document.getElementById('statMeta');
+    if (statMeta) statMeta.textContent = save.meta;
+    const shopMetaVal = document.getElementById('shopMetaVal');
+    if (shopMetaVal) shopMetaVal.textContent = save.meta;
   }
   refreshTopHud();
 
@@ -656,14 +576,6 @@ async function playReversedTrack(src) {
   // ============================================================
   let currentShopTab = 'colors';
 
-  // Bug #32 (2e audit du 21/07/2026) : '.shopTab' selectionnait aussi les onglets du
-  // formulaire Feedback qui partagent la meme classe CSS pour le style. Cliquer un
-  // onglet Feedback declenchait ce handler, mettait currentShopTab = undefined (ces
-  // onglets n'ont pas d'attribut data-tab), supprimait le marquage 'active' de tous
-  // les onglets boutique, et appelait renderShop() inutilement. A la prochaine
-  // ouverture de la boutique, aucun onglet n'etait marque actif et la grille affichait
-  // 'Fonds' (valeur par defaut de shopCatalog(undefined)) au lieu de 'Couleurs'.
-  // Corrige en ciblant [data-tab] : seuls les onglets boutique ont cet attribut.
   document.querySelectorAll('[data-tab]').forEach(tabEl => {
     tabEl.addEventListener('click', () => {
       currentShopTab = tabEl.dataset.tab;
@@ -675,6 +587,7 @@ async function playReversedTrack(src) {
 
   function renderShop() {
     const grid = document.getElementById('shopGrid');
+    if (!grid) return;
     grid.innerHTML = '';
     const catalog = shopCatalog(currentShopTab);
     const uKey = unlockedKey(currentShopTab);
@@ -748,16 +661,13 @@ async function playReversedTrack(src) {
   // ============================================================
   function renderScores() {
     const list = document.getElementById('scoresList');
+    if (!list) return;
     list.innerHTML = '';
     const scores = (save.topScores || [])
       .slice()
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
     if (scores.length === 0) {
-      // Bug #37 : la chaîne utilisait U+2019 (‘right single quotation mark’) au lieu
-      // d’une apostrophe ASCII échappée — valide en JS mais fragile (un éditeur qui
-      // normalise les guillemets typographiques peut la casser silencieusement).
-      // Converté en littéral de gabarit (backtick) : aucune échappement nécessaire.
       list.innerHTML = `<div class="emptyScores">Aucun score enregistré pour l’instant. Lance un run !</div>`;
     } else {
       scores.forEach((s, i) => {
@@ -781,6 +691,7 @@ async function playReversedTrack(src) {
   async function renderGlobalScores() {
     const section = document.getElementById('globalScoresSection');
     const list = document.getElementById('globalScoresList');
+    if (!section || !list) return;
     if (!cloudEnabled()) {
       section.classList.add('hidden');
       return;
@@ -818,8 +729,8 @@ async function playReversedTrack(src) {
         list.appendChild(row);
       });
     } catch (err) {
-      console.warn('Rendu du classement global impossible (structure inattendue) :', err);
-      list.innerHTML = `<div class="emptyScores">Classement global indisponible pour l’instant.</div>`;
+      console.warn('Rendu du classement global impossible :', err);
+      list.innerHTML = `<div class="emptyScores">Classement global indisponible.</div>`;
     }
   }
 
@@ -828,14 +739,17 @@ async function playReversedTrack(src) {
   // ============================================================
   const BINDING_LABELS = { up: '⬆ Haut', down: '⬇ Bas', left: '⬅ Gauche', right: '➡ Droite' };
 
+  // Bug #46 : Affichage en majuscule des touches a lettre unique
   function displayKey(key) {
     if (!key) return '—';
     const names = { ' ': 'Espace', 'Enter': 'Entrée', 'Backspace': '⌫', 'Delete': 'Suppr', 'Control': 'Ctrl', 'Shift': 'Shift', 'Alt': 'Alt' };
-    return names[key] || key;
+    if (names[key]) return names[key];
+    return key.length === 1 ? key.toUpperCase() : key;
   }
 
+  // Bug #42 : Re-initialisation propre de l'affichage lors du changement de capture
   function renderSettingsScreen() {
-    capturingDir = null; // annule toute capture en cours (navigation rapide)
+    capturingDir = null;
     const list = document.getElementById('bindingsList');
     if (!list) return;
     list.innerHTML = '';
@@ -854,6 +768,7 @@ async function playReversedTrack(src) {
       btn.style.cssText = 'padding:6px 14px; font-size:0.8rem;';
       btn.textContent = 'Changer';
       btn.addEventListener('click', () => {
+        renderSettingsScreen();
         capturingDir = d;
         btn.textContent = '…';
         keyDisplay.textContent = '?';
@@ -876,14 +791,6 @@ async function playReversedTrack(src) {
   // Game state
   // ============================================================
   let snake = [], dir = {x:1,y:0}, nextDir = {x:1,y:0}, food = [], obstacles = [], score = 0, room = 1, alive = false;
-  // Le tick de jeu n'utilise plus setInterval : setInterval est fortement
-  // throttlé (voire suspendu) par le navigateur quand l'onglet passe en
-  // arrière-plan (verrouillage d'écran mobile, changement d'onglet), ce qui
-  // provoquait un rattrapage brutal de plusieurs ticks d'un coup au retour
-  // (le serpent "saute" plusieurs cases, parfois contre un obstacle apparu
-  // entre-temps). À la place, un accumulateur de temps est avancé dans la
-  // boucle requestAnimationFrame (renderLoop), qui elle-même est throttlée
-  // proprement par le navigateur (pas de rattrapage en rafale).
   let isTicking = false;
   let tickAccumulator = 0;
   let lastFrameTime = null;
@@ -924,21 +831,21 @@ async function playReversedTrack(src) {
   // ============================================================
   // Special rooms (miroir / glace / volcan)
   // ============================================================
-  const SPECIAL_ROOM_START = 3; // ne peuvent apparaître qu'à partir de cette salle
-  const SPECIAL_ROOM_CHANCE = 0.25; // 1 chance sur 4
+  const SPECIAL_ROOM_START = 3;
+  const SPECIAL_ROOM_CHANCE = 0.25;
   const SPECIAL_ROOM_TYPES = ['mirror', 'ice', 'volcano'];
 
-  let currentSpecialRoom = null; // null | 'mirror' | 'ice' | 'volcano'
-  let iceCells = [];             // [{x,y}] cases givrées (niveau glace) — pour l'affichage
-  let iceCellSet = new Set();    // index "x,y" -> lookup O(1) (cellFree/isIceCell appelés en boucle)
-  let slideQueue = 0;            // nombre de cases de glissade restantes à appliquer
-  let lavaCells = [];            // [{x,y,armedAt}] cases actuellement en lave (niveau volcan) — pour l'affichage
-  let lavaCellMap = new Map();   // index "x,y" -> armedAt, lookup O(1) (testé à chaque tick/frame)
-  let lavaCyclePositions = [];   // pool de positions candidates pour la lave
-  let lavaCycleNextAt = null;    // timestamp (performance.now()) du prochain cycle - piloté par la boucle rAF, plus de setInterval
+  let currentSpecialRoom = null;
+  let iceCells = [];
+  let iceCellSet = new Set();
+  let slideQueue = 0;
+  let lavaCells = [];
+  let lavaCellMap = new Map();
+  let lavaCyclePositions = [];
+  let lavaCycleNextAt = null;
   function cellKey_(x, y) { return x + ',' + y; }
-  const LAVA_CYCLE_MS = 2500;    // à quel rythme les zones de lave changent de place
-  const LAVA_WARNING_MS = 900;   // temps d'avertissement visuel avant que ça devienne mortel
+  const LAVA_CYCLE_MS = 2500;
+  const LAVA_WARNING_MS = 900;
 
   function rollSpecialRoom() {
     if (room < SPECIAL_ROOM_START) return null;
@@ -956,35 +863,27 @@ async function playReversedTrack(src) {
     slideQueue = 0;
   }
 
-  // Mémorise si la salle précédente était spéciale, pour savoir si le thème
-  // classique doit être relancé en entrant dans une salle normale (sortie de
-  // salle spéciale) ou simplement laissé à boucler (normale → normale).
   let lastRoomWasSpecial = false;
 
   function setupSpecialRoom(type) {
-  const wasSpecial = lastRoomWasSpecial;
-  clearSpecialRoomEffects();
-  currentSpecialRoom = type;
-  lastRoomWasSpecial = !!type;
-  if (type === 'ice') {
-    generateIceCells();
-    playMusic('ice');
-  } else if (type === 'volcano') {
-    generateLavaCyclePositions();
-    cycleLavaZones();
-    lavaCycleNextAt = performance.now() + LAVA_CYCLE_MS;
-    playMusic('volcano');
-  } else if (type === 'mirror') {
-    playMusic('classic', { reversed: true });
-  } else if (wasSpecial) {
-    // On ne relance le thème classique que si on QUITTE une salle spéciale
-    // (miroir/glace/volcan) pour une salle normale. Avant, ce cas se
-    // déclenchait aussi en passant d'une salle normale à une autre salle
-    // normale, ce qui faisait repartir le thème classique depuis le début
-    // à chaque salle au lieu de le laisser boucler tranquillement.
-    playMusic('classic');
+    const wasSpecial = lastRoomWasSpecial;
+    clearSpecialRoomEffects();
+    currentSpecialRoom = type;
+    lastRoomWasSpecial = !!type;
+    if (type === 'ice') {
+      generateIceCells();
+      playMusic('ice');
+    } else if (type === 'volcano') {
+      generateLavaCyclePositions();
+      cycleLavaZones();
+      lavaCycleNextAt = performance.now() + LAVA_CYCLE_MS;
+      playMusic('volcano');
+    } else if (type === 'mirror') {
+      playMusic('classic', { reversed: true });
+    } else if (wasSpecial) {
+      playMusic('classic');
+    }
   }
-}
 
   function generateIceCells() {
     iceCells = [];
@@ -1007,7 +906,6 @@ async function playReversedTrack(src) {
   }
 
   function generateLavaCyclePositions() {
-    // Un pool plus large que ce qui est actif à un instant T, pour piocher dedans à chaque cycle
     lavaCyclePositions = [];
     const poolSize = Math.floor(GRID * GRID * 0.18);
     let tries = 0;
@@ -1025,15 +923,6 @@ async function playReversedTrack(src) {
     const headX = snake && snake[0] ? snake[0].x : 10;
     const headY = snake && snake[0] ? snake[0].y : 10;
     const activeCount = Math.floor(GRID * GRID * 0.05);
-    // Bug #26 : le pool de positions candidates (lavaCyclePositions) est
-    // généré une seule fois au début de la salle Volcan, à un moment où les
-    // obstacles de la salle ne sont pas encore connus par cette fonction
-    // (generateObstaclesForRoom() tourne juste après). Sans ce filtre, un
-    // cycle ultérieur (toutes les 2.5s, en cours de salle) pouvait donc
-    // repositionner une zone de lave exactement sur une case occupée par un
-    // obstacle déjà en place, ou sur un fruit, créant un chevauchement
-    // visuel/logique alors que la garantie "pas de chevauchement" n'était
-    // vérifiée qu'à la génération initiale (bug #13/#25).
     const candidates = lavaCyclePositions.filter(c =>
       !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
       !obstacles.some(o => o.x === c.x && o.y === c.y) &&
@@ -1042,22 +931,13 @@ async function playReversedTrack(src) {
     const shuffled = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
 
-    // Phase d'avertissement : la case clignote avant de devenir vraiment mortelle,
-    // pour laisser une chance de réagir plutôt qu'une mort instantanée imprévisible.
     lavaCells = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
     lavaCellMap = new Map(lavaCells.map(c => [cellKey_(c.x, c.y), c.armedAt]));
   }
 
-  // Un seul lookup dans la Map (au lieu de deux .find() séparés comme avant),
-  // testé potentiellement à chaque tick de jeu et chaque frame de rendu en salle Volcan.
   function isLavaActive(x, y) {
     const armedAt = lavaCellMap.get(cellKey_(x, y));
     return armedAt !== undefined && Date.now() >= armedAt;
-  }
-
-  function isLavaWarning(x, y) {
-    const armedAt = lavaCellMap.get(cellKey_(x, y));
-    return armedAt !== undefined && Date.now() < armedAt;
   }
 
   function isIceCell(x, y) {
@@ -1098,7 +978,7 @@ async function playReversedTrack(src) {
     generateObstaclesForRoom();
     spawnFood();
     updateHud();
-    mutBar.innerHTML = '';
+    if (mutBar) mutBar.innerHTML = '';
   }
 
   function cellFree(x, y) {
@@ -1107,14 +987,6 @@ async function playReversedTrack(src) {
     for (const o of obstacles) if (o.x === x && o.y === y) return false;
     for (const f of food) if (f.x === x && f.y === y) return false;
     if (currentSpecialRoom === 'ice' && isIceCell(x, y)) return false;
-    // Bug #28 : on excluait uniquement isLavaActive(), donc une case de lave
-    // encore en phase d'avertissement (armedAt dans le futur, isLavaActive
-    // renvoie false) était considérée comme libre. Un obstacle ou un fruit
-    // pouvait alors être placé dessus, et ~900ms plus tard cette même case
-    // devenait mortelle (lave active) tout en portant déjà un obstacle/fruit
-    // - chevauchement visuel et logique. On exclut désormais toute case
-    // présente dans lavaCellMap (active OU en avertissement), pas seulement
-    // celles déjà actives.
     if (currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(x, y))) return false;
     return true;
   }
@@ -1171,9 +1043,9 @@ async function playReversedTrack(src) {
   }
 
   function updateHud() {
-    scoreVal.textContent = score;
-    roomVal.textContent = room;
-    bestVal.textContent = Math.max(save.best, score);
+    if (scoreVal) scoreVal.textContent = score;
+    if (roomVal) roomVal.textContent = room;
+    if (bestVal) bestVal.textContent = Math.max(save.best, score);
     const diffLabel = document.getElementById('diffVal');
     if (diffLabel) diffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
 
@@ -1225,12 +1097,10 @@ async function playReversedTrack(src) {
   }
 
   window.addEventListener('keydown', (e) => {
-    // Mode capture — remap depuis l'écran Réglages
     if (capturingDir) {
       if (!settingsOverlay.classList.contains('hidden')) {
         e.preventDefault();
         if (!BINDING_BLOCKED.has(e.key)) {
-          // Retire la touche de toute autre direction si déjà assignée (évite les doublons)
           for (const d of ['up','down','left','right']) {
             if (d !== capturingDir && keyBindings[d] === e.key) keyBindings[d] = '';
           }
@@ -1241,7 +1111,7 @@ async function playReversedTrack(src) {
         renderSettingsScreen();
         return;
       }
-      capturingDir = null; // overlay caché → annulation silencieuse
+      capturingDir = null;
     }
     const ARROW_MAP = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
     let d = ARROW_MAP[e.key];
@@ -1265,15 +1135,20 @@ async function playReversedTrack(src) {
     const t = e.touches[0];
     touchStart = { x: t.clientX, y: t.clientY };
   }, { passive: true });
+
+  // Bug #47 : Seuil de deplacement minimum (15px) pour le swipe
   canvas.addEventListener('touchend', (e) => {
     if (!touchStart) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - touchStart.x;
     const dy = t.clientY - touchStart.y;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      setDir(dx > 0 ? 'right' : 'left');
-    } else {
-      setDir(dy > 0 ? 'down' : 'up');
+    const MIN_SWIPE = 15;
+    if (Math.abs(dx) > MIN_SWIPE || Math.abs(dy) > MIN_SWIPE) {
+      if (Math.abs(dx) > Math.abs(dy)) {
+        setDir(dx > 0 ? 'right' : 'left');
+      } else {
+        setDir(dy > 0 ? 'down' : 'up');
+      }
     }
     touchStart = null;
   }, { passive: true });
@@ -1284,8 +1159,6 @@ async function playReversedTrack(src) {
   function step() {
     if (!alive || waitingForFirstInput) return;
 
-    // Sur la glace, la direction du joueur est ignorée le temps de la glissade :
-    // on continue dans la même direction jusqu'à épuisement de la glissade.
     if (slideQueue > 0) {
       slideQueue--;
     } else {
@@ -1326,18 +1199,10 @@ async function playReversedTrack(src) {
 
     snake.unshift(head);
 
-    // Case givrée : programme 1-2 cases de glissade supplémentaires dans la même direction
     if (currentSpecialRoom === 'ice' && isIceCell(head.x, head.y) && slideQueue === 0) {
-      slideQueue = 1 + Math.floor(Math.random() * 2); // 1 ou 2 cases
+      slideQueue = 1 + Math.floor(Math.random() * 2);
     }
 
-    // Bug #29 : le deplacement magnetique des fruits ne verifiait pas si la
-    // case cible etait libre. Un fruit pouvait etre pousse sur un obstacle
-    // (fruit inaccessible, bloque a vie), sur un autre fruit (superposition
-    // invisible — le fruit interieur ne peut plus etre mange), sur un segment
-    // du corps du serpent, ou sur une case de lave/avertissement en salle
-    // Volcan (forcant le joueur a marcher dans la lave pour manger le fruit).
-    // On calcule la case cible et on ne deplace le fruit que si elle est libre.
     if (magnetActive) {
       for (const f of food) {
         const d = Math.abs(f.x - head.x) + Math.abs(f.y - head.y);
@@ -1392,11 +1257,6 @@ async function playReversedTrack(src) {
   }
 
   function advanceRoom() {
-    // On quitte la salle courante : si c'était une salle Volcan, son cycle de
-    // lave (piloté par lavaCycleNextAt dans la boucle rAF) doit être arrêté ICI,
-    // pas seulement au clic sur une mutation (setupSpecialRoom). Sinon il
-    // continue de tourner et de repositionner les zones de lave pendant tout
-    // l'écran de choix de mutation, alors que le jeu (tick) est lui en pause.
     lavaCycleNextAt = null;
     room++;
     currentSpecialRoom = rollSpecialRoom();
@@ -1404,20 +1264,11 @@ async function playReversedTrack(src) {
     showMutationChoice();
   }
 
-  // Bug #30 : quand notTaken.length < n (moins de 3 mutations disponibles,
-  // cas des runs depassant 6 salles), le code basculait sur MUTATION_POOL
-  // entier. Meme quand 1 ou 2 mutations non prises existaient encore, elles
-  // n'etaient pas garanties dans le tirage — le joueur pouvait recevoir
-  // 3 mutations deja actives alors qu'il en restait des nouvelles disponibles.
-  // On priorise desormais toujours les mutations non prises, et on ne complete
-  // avec des mutations deja actives que si le nombre de slots restants l'exige.
   function pickRandomMutations(n) {
     const notTaken = MUTATION_POOL.filter(m => !activeMutations.find(a => a.id === m.id));
     if (notTaken.length >= n) {
       return [...notTaken].sort(() => Math.random() - 0.5).slice(0, n);
     }
-    // Moins de n mutations non prises : on les prend toutes, puis on complete
-    // avec des mutations deja actives (effets cumulables ou idempotents).
     const shuffledNotTaken = [...notTaken].sort(() => Math.random() - 0.5);
     const takenPool = MUTATION_POOL.filter(m => activeMutations.find(a => a.id === m.id));
     const shuffledTaken = [...takenPool].sort(() => Math.random() - 0.5);
@@ -1434,15 +1285,17 @@ async function playReversedTrack(src) {
     stopTicking();
     const choices = pickRandomMutations(3);
     const container = document.getElementById('mutChoices');
-    container.innerHTML = '';
+    if (container) container.innerHTML = '';
 
     const specialBanner = document.getElementById('specialRoomBanner');
-    if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
-      const info = SPECIAL_ROOM_INFO[currentSpecialRoom];
-      specialBanner.innerHTML = `<div class="specialRoomTitle">${info.emoji} ${info.label}</div><div class="specialRoomDesc">${info.desc}</div>`;
-      specialBanner.classList.remove('hidden');
-    } else {
-      specialBanner.classList.add('hidden');
+    if (specialBanner) {
+      if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
+        const info = SPECIAL_ROOM_INFO[currentSpecialRoom];
+        specialBanner.innerHTML = `<div class="specialRoomTitle">${info.emoji} ${info.label}</div><div class="specialRoomDesc">${info.desc}</div>`;
+        specialBanner.classList.remove('hidden');
+      } else {
+        specialBanner.classList.add('hidden');
+      }
     }
 
     choices.forEach(mut => {
@@ -1454,15 +1307,6 @@ async function playReversedTrack(src) {
         activeMutations.push(mut);
         renderMutBar();
         overlayMut.classList.add('hidden');
-        // Bug #25 (audit du 20/07/2026) : setupSpecialRoom() doit être appelé
-        // AVANT generateObstaclesForRoom(). currentSpecialRoom est déjà mis à
-        // jour vers le type de la NOUVELLE salle dès advanceRoom(), mais les
-        // cases givrées/lave (iceCellSet/lavaCellMap) appartenaient encore à
-        // l'ANCIENNE salle tant que setupSpecialRoom() (qui les nettoie et les
-        // régénère) n'avait pas tourné. generateObstaclesForRoom() vérifiait
-        // donc ces cases avec de mauvaises données, et les obstacles pouvaient
-        // ensuite chevaucher les cases givrées/lave fraîchement générées juste
-        // après - cassant la garantie apportée par le fix du bug #13.
         setupSpecialRoom(currentSpecialRoom);
         generateObstaclesForRoom();
         food = [];
@@ -1471,12 +1315,13 @@ async function playReversedTrack(src) {
         updateHud();
         startTicking();
       });
-      container.appendChild(card);
+      if (container) container.appendChild(card);
     });
     overlayMut.classList.remove('hidden');
   }
 
   function renderMutBar() {
+    if (!mutBar) return;
     mutBar.innerHTML = '';
     activeMutations.forEach(m => {
       const chip = document.createElement('div');
@@ -1500,11 +1345,17 @@ async function playReversedTrack(src) {
     submitScoreToCloud(score, room, metaGain, selectedDifficulty);
     saveEclatsToCloud(save.meta);
 
-    document.getElementById('overScore').textContent = score;
-    document.getElementById('overRoom').textContent = room;
-    document.getElementById('overMeta').textContent = '+' + metaGain;
-    document.getElementById('overDiffLabel').textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
-    document.getElementById('newRecordMsg').classList.toggle('hidden', !isRecord);
+    const overScore = document.getElementById('overScore');
+    const overRoom = document.getElementById('overRoom');
+    const overMeta = document.getElementById('overMeta');
+    const overDiffLabel = document.getElementById('overDiffLabel');
+    const newRecordMsg = document.getElementById('newRecordMsg');
+
+    if (overScore) overScore.textContent = score;
+    if (overRoom) overRoom.textContent = room;
+    if (overMeta) overMeta.textContent = '+' + metaGain;
+    if (overDiffLabel) overDiffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
+    if (newRecordMsg) newRecordMsg.classList.toggle('hidden', !isRecord);
     refreshTopHud();
 
     overlayMut.classList.add('hidden');
@@ -1518,14 +1369,11 @@ async function playReversedTrack(src) {
     const bgTheme = getEquippedBackground();
     const colorTheme = getEquippedColor();
     const foodTheme = getEquippedFood();
-    const now = Date.now(); // un seul appel par frame, réutilisé pour la lave, le rainbow, etc.
+    const now = Date.now();
 
     canvas.style.background = bgTheme.bg;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Toutes les lignes de la grille dans UN seul path, un seul stroke() :
-    // avant, c'était 42 appels beginPath/stroke séparés à chaque frame (60x/s),
-    // ce qui multiplie inutilement les changements d'état du contexte 2D.
     ctx.strokeStyle = bgTheme.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -1537,10 +1385,6 @@ async function playReversedTrack(src) {
     }
     ctx.stroke();
 
-    // Cases spéciales (glace / lave) : même principe que la grille, un seul
-    // path regroupant toutes les cases d'une même couleur, un seul fill()/
-    // stroke() par groupe au lieu d'un appel par case (jusqu'à ~24 cases en
-    // salle Volcan/Glace).
     if (currentSpecialRoom === 'ice' && iceCells.length) {
       ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
       ctx.beginPath();
@@ -1580,8 +1424,6 @@ async function playReversedTrack(src) {
       ctx.fill();
     }
 
-    // Le font n'est fixé qu'une fois par frame (pas par fruit) : un même skin
-    // de nourriture est équipé pour tous les fruits normaux d'une frame donnée.
     let foodFontSet = false;
     food.forEach(f => {
       const cx = f.x * CELL + CELL / 2;
@@ -1614,8 +1456,6 @@ async function playReversedTrack(src) {
       ctx.textBaseline = 'alphabetic';
     }
 
-    // Segments non-rainbow : même couleur (tête à part, corps groupé) -> un
-    // seul path/fill pour tout le corps au lieu d'un fill par segment.
     if (colorTheme.rainbow) {
       snake.forEach((s, i) => {
         const hue = (i * 25 + now / 20) % 360;
@@ -1654,9 +1494,6 @@ async function playReversedTrack(src) {
     }
 
     if (particles.length) {
-      // Toutes les particules partagent la même forme/taille ; seule la couleur
-      // et l'opacité varient. On les regroupe par couleur pour limiter les
-      // changements de fillStyle, l'opacité restant gérée par particule via globalAlpha.
       particles.forEach(p => {
         ctx.globalAlpha = Math.max(0, p.life / 20);
         ctx.fillStyle = p.color;
@@ -1680,10 +1517,6 @@ async function playReversedTrack(src) {
     }
   }
 
-  // Ajoute un rectangle à coins arrondis au path COURANT sans le fill/stroke -
-  // permet de regrouper plusieurs formes de même couleur en un seul appel
-  // fill()/stroke() (voir draw()). roundRect() ci-dessous garde l'ancien
-  // comportement (fill immédiat) pour les appels isolés.
   function addRoundRectPath(x, y, w, h, r) {
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -1691,12 +1524,6 @@ async function playReversedTrack(src) {
     ctx.arcTo(x, y + h, x, y, r);
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
-  }
-
-  function roundRect(x, y, w, h, r) {
-    ctx.beginPath();
-    addRoundRectPath(x, y, w, h, r);
-    ctx.fill();
   }
 
   function updateParticles() {
@@ -1709,17 +1536,12 @@ async function playReversedTrack(src) {
     }
   }
 
-  // Nombre max de ticks rattrapés en une seule frame après une grosse pause
-  // (onglet en arrière-plan, verrouillage d'écran). Au-delà, on laisse
-  // filer le temps plutôt que de faire rejouer plusieurs secondes de jeu
-  // d'un coup - le joueur n'a de toute façon pas pu réagir pendant ce temps.
   const MAX_CATCHUP_TICKS = 3;
 
   function renderLoop(now) {
     if (lastFrameTime === null) lastFrameTime = now;
     let dt = now - lastFrameTime;
     lastFrameTime = now;
-    // Sécurité si dt est énorme (retour d'un onglet en veille depuis longtemps)
     if (dt > 1000) dt = 1000;
 
     if (isTicking) {
@@ -1729,29 +1551,17 @@ async function playReversedTrack(src) {
         step();
         tickAccumulator -= baseTickMs;
         ticksThisFrame++;
-        if (!isTicking) break; // step() peut déclencher endRun()/showMutationChoice() -> stopTicking()
+        if (!isTicking) break;
       }
-      // Évite d'accumuler indéfiniment si on a plafonné le rattrapage
       if (tickAccumulator > baseTickMs * MAX_CATCHUP_TICKS) tickAccumulator = baseTickMs;
 
-      // Cycle des zones de lave (salle Volcan) : piloté par la même horloge
-      // rAF plutôt qu'un setInterval séparé, pour rester cohérent avec le
-      // reste de la boucle de jeu et éviter toute dérive de timer en arrière-plan.
       if (currentSpecialRoom === 'volcano' && lavaCycleNextAt !== null && now >= lavaCycleNextAt) {
         cycleLavaZones();
         lavaCycleNextAt = now + LAVA_CYCLE_MS;
       }
     }
 
-    // Bug #24 (audit du 20/07/2026) : cette condition ne vérifiait que
-    // menuOverlay, donc draw() (et updateParticles()) continuaient de
-    // tourner à chaque frame même sur les écrans Boutique/Scores/
-    // Difficulté/Feedback, alors que le canvas (#gameWrap) y est masqué
-    // (display:none) - travail inutile à 60x/s pour un rendu invisible.
-    // Le canvas ne reste visible que sur l'écran de jeu (y compris les
-    // overlays de mutation/game over, qui se superposent SANS masquer
-    // #gameWrap). On se base donc sur la visibilité réelle de #gameWrap.
-    if (!gameWrap.classList.contains('hidden')) {
+    if (gameWrap && !gameWrap.classList.contains('hidden')) {
       updateParticles();
       draw();
     }
@@ -1761,7 +1571,7 @@ async function playReversedTrack(src) {
   function startTicking() {
     isTicking = true;
     tickAccumulator = 0;
-    lastFrameTime = null; // évite un gros dt calculé contre le timestamp d'avant la pause
+    lastFrameTime = null;
   }
 
   function stopTicking() {
@@ -1793,13 +1603,8 @@ async function playReversedTrack(src) {
   const pseudoInputEl = document.getElementById('pseudoInput');
   const pseudoStatusEl = document.getElementById('pseudoStatus');
 
-  // Applique l'état de verrouillage du pseudo au champ + au message affiché.
-  // Appelé au chargement ET à chaque retour au menu (showScreen('menu')) :
-  // avant, le verrouillage posé en cours de session (premier score envoyé
-  // avec succès via lockPseudo()) ne se reflétait dans l'UI qu'après un
-  // rechargement complet de la page, ce qui laissait le champ éditable
-  // sans aucune indication visuelle du blocage silencieux.
   function refreshPseudoLockUI() {
+    if (!pseudoInputEl) return;
     if (isPseudoLocked()) {
       pseudoInputEl.value = localStorage.getItem('serpentMutant_pseudo') || '';
       pseudoInputEl.disabled = true;
@@ -1813,49 +1618,56 @@ async function playReversedTrack(src) {
   refreshPseudoLockUI();
 
   let pseudoCheckTimer = null;
-  pseudoInputEl.addEventListener('input', (e) => {
-    if (isPseudoLocked()) return;
-    const val = e.target.value.trim();
-    if (val) localStorage.setItem('serpentMutant_pseudo', val);
-    else localStorage.removeItem('serpentMutant_pseudo');
+  if (pseudoInputEl) {
+    pseudoInputEl.addEventListener('input', (e) => {
+      if (isPseudoLocked()) return;
+      const val = e.target.value.trim();
+      if (val) localStorage.setItem('serpentMutant_pseudo', val);
+      else localStorage.removeItem('serpentMutant_pseudo');
 
-    if (!pseudoStatusEl) return;
-    clearTimeout(pseudoCheckTimer);
-    if (!val) { pseudoStatusEl.textContent = ''; return; }
-    if (!PSEUDO_REGEX.test(val)) {
-      pseudoStatusEl.textContent = '❌ 3-18 caractères, lettres/chiffres/_/- uniquement';
-      return;
-    }
-    // Bug #33 (2e audit du 21/07/2026) : 'Anonyme' (et variantes de casse) est le
-    // pseudo par defaut envoye quand le champ est vide ; il ne peut jamais etre
-    // revendique cote serveur. On l'intercepte ici avant l'appel reseau pour eviter
-    // l'affichage trompeur '✅ Disponible' et donner un message explicite.
-    if (val.toLowerCase() === 'anonyme') {
-      pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
-      return;
-    }
-    pseudoStatusEl.textContent = '⏳ Vérification…';
-    pseudoCheckTimer = setTimeout(async () => {
-      const result = await checkPseudoAvailable(val);
-      if (result.available) {
-        pseudoStatusEl.textContent = '✅ Disponible';
-      } else if (result.error === 'reserved') {
-        pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
-      } else {
-        pseudoStatusEl.textContent = '❌ Déjà pris';
+      if (!pseudoStatusEl) return;
+      clearTimeout(pseudoCheckTimer);
+      if (!val) { pseudoStatusEl.textContent = ''; return; }
+      if (!PSEUDO_REGEX.test(val)) {
+        pseudoStatusEl.textContent = '❌ 3-18 caractères, lettres/chiffres/_/- uniquement';
+        return;
       }
-    }, 500);
-  });
+      if (val.toLowerCase() === 'anonyme') {
+        pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
+        return;
+      }
+      pseudoStatusEl.textContent = '⏳ Vérification…';
+      pseudoCheckTimer = setTimeout(async () => {
+        const result = await checkPseudoAvailable(val);
+        if (result.available) {
+          pseudoStatusEl.textContent = '✅ Disponible';
+        } else if (result.error === 'reserved') {
+          pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
+        } else {
+          pseudoStatusEl.textContent = '❌ Déjà pris';
+        }
+      }, 500);
+    });
+  }
 
-  document.getElementById('btnStart').addEventListener('click', () => {
-    showScreen('difficulty');
-  });
+  // Bug #41 : Verification defensive sur btnStart
+  const btnStart = document.getElementById('btnStart');
+  if (btnStart) {
+    btnStart.addEventListener('click', () => showScreen('difficulty'));
+  }
 
-  document.getElementById('btnOpenShop').addEventListener('click', () => showScreen('shop'));
-  document.getElementById('btnCloseShop').addEventListener('click', () => showScreen('menu'));
-  document.getElementById('btnOpenScores').addEventListener('click', () => showScreen('scores'));
-  document.getElementById('btnCloseScores').addEventListener('click', () => showScreen('menu'));
-  document.getElementById('btnCancelDifficulty').addEventListener('click', () => showScreen('menu'));
+  const btnOpenShop = document.getElementById('btnOpenShop');
+  if (btnOpenShop) btnOpenShop.addEventListener('click', () => showScreen('shop'));
+  const btnCloseShop = document.getElementById('btnCloseShop');
+  if (btnCloseShop) btnCloseShop.addEventListener('click', () => showScreen('menu'));
+
+  const btnOpenScores = document.getElementById('btnOpenScores');
+  if (btnOpenScores) btnOpenScores.addEventListener('click', () => showScreen('scores'));
+  const btnCloseScores = document.getElementById('btnCloseScores');
+  if (btnCloseScores) btnCloseScores.addEventListener('click', () => showScreen('menu'));
+
+  const btnCancelDifficulty = document.getElementById('btnCancelDifficulty');
+  if (btnCancelDifficulty) btnCancelDifficulty.addEventListener('click', () => showScreen('menu'));
 
   document.querySelectorAll('.diffBtn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1866,27 +1678,24 @@ async function playReversedTrack(src) {
     });
   });
 
-  document.getElementById('btnRetry').addEventListener('click', () => {
-    showScreen('difficulty');
-  });
+  const btnRetry = document.getElementById('btnRetry');
+  if (btnRetry) btnRetry.addEventListener('click', () => showScreen('difficulty'));
 
-  document.getElementById('btnBackToMenu').addEventListener('click', () => {
+  const btnBackToMenu = document.getElementById('btnBackToMenu');
+  if (btnBackToMenu) btnBackToMenu.addEventListener('click', () => {
     stopTicking();
     showScreen('menu');
   });
 
-  btnMenuFromGame.addEventListener('click', () => {
-    // pause/abandon current run and return to menu without counting it as a loss twice
-    stopTicking();
-    alive = false;
-    // Sans ça, quitter un run en cours de salle Volcan laissait lavaCycleTimer
-    // tourner indéfiniment en arrière-plan (fuite de timer), et la musique de
-    // la salle spéciale (glace/volcan/miroir inversé) continuait de jouer une
-    // fois revenu au menu au lieu de s'arrêter.
-    stopMusic();
-    clearSpecialRoomEffects();
-    showScreen('menu');
-  });
+  if (btnMenuFromGame) {
+    btnMenuFromGame.addEventListener('click', () => {
+      stopTicking();
+      alive = false;
+      stopMusic();
+      clearSpecialRoomEffects();
+      showScreen('menu');
+    });
+  }
 
   // ============================================================
   // Feedback (Bugs/Suggestions)
@@ -1904,13 +1713,13 @@ async function playReversedTrack(src) {
       t.classList.toggle('active', t.dataset.feedbackTab === currentFeedbackTab);
     });
     if (currentFeedbackTab === 'bug') {
-      feedbackBugFields.classList.remove('hidden');
-      feedbackMessageLabel.textContent = 'Décris le problème';
-      feedbackMessageInput.placeholder = "Explique ce qui s'est passé...";
+      if (feedbackBugFields) feedbackBugFields.classList.remove('hidden');
+      if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Décris le problème';
+      if (feedbackMessageInput) feedbackMessageInput.placeholder = "Explique ce qui s'est passé...";
     } else {
-      feedbackBugFields.classList.add('hidden');
-      feedbackMessageLabel.textContent = 'Ton idée';
-      feedbackMessageInput.placeholder = "Qu'est-ce qu'on pourrait ajouter ou améliorer ?";
+      if (feedbackBugFields) feedbackBugFields.classList.add('hidden');
+      if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Ton idée';
+      if (feedbackMessageInput) feedbackMessageInput.placeholder = "Qu'est-ce qu'on pourrait ajouter ou améliorer ?";
     }
   }
 
@@ -1923,57 +1732,77 @@ async function playReversedTrack(src) {
 
   function openFeedbackScreen() {
     currentFeedbackTab = 'bug';
-    feedbackMessageInput.value = '';
-    feedbackStatusEl.textContent = '';
-    // Pré-remplit le contexte si un run est en cours (champ reste libre/modifiable)
-    if (alive) {
-      const specialLabel = currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]
-        ? ' (' + SPECIAL_ROOM_INFO[currentSpecialRoom].label + ')'
-        : '';
-      feedbackContextInput.value = 'Salle ' + room + specialLabel;
-    } else {
-      feedbackContextInput.value = 'Menu';
+    if (feedbackMessageInput) feedbackMessageInput.value = '';
+    if (feedbackStatusEl) feedbackStatusEl.textContent = '';
+    if (feedbackContextInput) {
+      if (alive) {
+        const specialLabel = currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]
+          ? ' (' + SPECIAL_ROOM_INFO[currentSpecialRoom].label + ')'
+          : '';
+        feedbackContextInput.value = 'Salle ' + room + specialLabel;
+      } else {
+        feedbackContextInput.value = 'Menu';
+      }
     }
     renderFeedbackTabUI();
   }
 
-  document.getElementById('btnOpenFeedback').addEventListener('click', () => showScreen('feedback'));
-  document.getElementById('btnCloseFeedback').addEventListener('click', () => showScreen('menu'));
-  document.getElementById('btnOpenSettings').addEventListener('click', () => showScreen('settings'));
-  document.getElementById('btnCloseSettings').addEventListener('click', () => showScreen('menu'));
+  const btnOpenFeedback = document.getElementById('btnOpenFeedback');
+  if (btnOpenFeedback) btnOpenFeedback.addEventListener('click', () => showScreen('feedback'));
+  const btnCloseFeedback = document.getElementById('btnCloseFeedback');
+  if (btnCloseFeedback) btnCloseFeedback.addEventListener('click', () => showScreen('menu'));
 
-  btnSubmitFeedback.addEventListener('click', async () => {
-    const message = feedbackMessageInput.value.trim();
-    if (!message) {
-      feedbackStatusEl.textContent = '⚠️ Écris un message avant d\'envoyer.';
-      feedbackStatusEl.style.color = '#ff6b9d';
-      return;
-    }
-    if (!cloudEnabled()) {
-      feedbackStatusEl.textContent = '☁️ Envoi impossible : mode local uniquement (aucune URL cloud configurée).';
-      feedbackStatusEl.style.color = '#ff6b9d';
-      return;
-    }
-    btnSubmitFeedback.disabled = true;
-    feedbackStatusEl.textContent = '⏳ Envoi en cours…';
-    feedbackStatusEl.style.color = '#9a9ab5';
+  const btnOpenSettings = document.getElementById('btnOpenSettings');
+  if (btnOpenSettings) btnOpenSettings.addEventListener('click', () => showScreen('settings'));
+  const btnCloseSettings = document.getElementById('btnCloseSettings');
+  if (btnCloseSettings) btnCloseSettings.addEventListener('click', () => showScreen('menu'));
 
-    const context = currentFeedbackTab === 'bug' ? feedbackContextInput.value.trim() : '';
-    const result = await submitFeedbackToCloud(currentFeedbackTab, context, message);
+  if (btnSubmitFeedback) {
+    btnSubmitFeedback.addEventListener('click', async () => {
+      const message = feedbackMessageInput ? feedbackMessageInput.value.trim() : '';
+      if (!message) {
+        if (feedbackStatusEl) {
+          feedbackStatusEl.textContent = '⚠️ Écris un message avant d\'envoyer.';
+          feedbackStatusEl.style.color = '#ff6b9d';
+        }
+        return;
+      }
+      if (!cloudEnabled()) {
+        if (feedbackStatusEl) {
+          feedbackStatusEl.textContent = '☁️ Envoi impossible : mode local uniquement (aucune URL cloud configurée).';
+          feedbackStatusEl.style.color = '#ff6b9d';
+        }
+        return;
+      }
+      btnSubmitFeedback.disabled = true;
+      if (feedbackStatusEl) {
+        feedbackStatusEl.textContent = '⏳ Envoi en cours…';
+        feedbackStatusEl.style.color = '#9a9ab5';
+      }
 
-    btnSubmitFeedback.disabled = false;
-    if (result.ok) {
-      feedbackStatusEl.textContent = '✅ Merci ! Ton retour a bien été envoyé.';
-      feedbackStatusEl.style.color = '#9a9ab5';
-      feedbackMessageInput.value = '';
-    } else if (result.error === 'rate_limited') {
-      feedbackStatusEl.textContent = '⚠️ Trop de retours envoyés, réessaie dans quelques secondes.';
-      feedbackStatusEl.style.color = '#ff6b9d';
-    } else {
-      feedbackStatusEl.textContent = '⚠️ Envoi impossible (' + result.error + ')';
-      feedbackStatusEl.style.color = '#ff6b9d';
-    }
-  });
+      const context = (currentFeedbackTab === 'bug' && feedbackContextInput) ? feedbackContextInput.value.trim() : '';
+      const result = await submitFeedbackToCloud(currentFeedbackTab, context, message);
+
+      btnSubmitFeedback.disabled = false;
+      if (result.ok) {
+        if (feedbackStatusEl) {
+          feedbackStatusEl.textContent = '✅ Merci ! Ton retour a bien été envoyé.';
+          feedbackStatusEl.style.color = '#9a9ab5';
+        }
+        if (feedbackMessageInput) feedbackMessageInput.value = '';
+      } else if (result.error === 'rate_limited') {
+        if (feedbackStatusEl) {
+          feedbackStatusEl.textContent = '⚠️ Trop de retours envoyés, réessaie dans quelques secondes.';
+          feedbackStatusEl.style.color = '#ff6b9d';
+        }
+      } else {
+        if (feedbackStatusEl) {
+          feedbackStatusEl.textContent = '⚠️ Envoi impossible (' + result.error + ')';
+          feedbackStatusEl.style.color = '#ff6b9d';
+        }
+      }
+    });
+  }
 
   showScreen('menu');
   requestAnimationFrame(renderLoop);
