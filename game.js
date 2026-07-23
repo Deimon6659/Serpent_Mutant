@@ -33,7 +33,8 @@
       meta: 0,
       topScores: [], // [{score, room, date}] max 5, sorted desc
       unlocked: { colors: ['teal'], foods: ['classic'], backgrounds: ['default'] },
-      equipped: { color: 'teal', food: 'classic', background: 'default' }
+      equipped: { color: 'teal', food: 'classic', background: 'default' },
+      discoveredMutations: []
     };
   }
 
@@ -56,7 +57,8 @@
             color: parsed.equipped?.color || d.equipped.color,
             food: parsed.equipped?.food || d.equipped.food,
             background: parsed.equipped?.background || d.equipped.background
-          }
+          },
+          discoveredMutations: Array.isArray(parsed.discoveredMutations) ? parsed.discoveredMutations : d.discoveredMutations
         };
       }
     } catch (e) {}
@@ -509,6 +511,7 @@
   const overlayOver = document.getElementById('overOverlay');
   const feedbackOverlay = document.getElementById('feedbackOverlay');
   const settingsOverlay = document.getElementById('settingsOverlay');
+  const mutationsOverlay = document.getElementById('mutationsOverlay');
 
   // Bug #43 : Accès defensif sur shopMetaVal
   function refreshTopHud() {
@@ -535,6 +538,7 @@
     overlayOver.classList.add('hidden');
     feedbackOverlay.classList.add('hidden');
     settingsOverlay.classList.add('hidden');
+    mutationsOverlay.classList.add('hidden');
     hud.classList.add('hidden');
     gameWrap.classList.add('hidden');
     btnMenuFromGame.classList.add('hidden');
@@ -562,6 +566,9 @@
     } else if (name === 'settings') {
       renderSettingsScreen();
       settingsOverlay.classList.remove('hidden');
+    } else if (name === 'mutations') {
+      renderMutationsScreen();
+      mutationsOverlay.classList.remove('hidden');
     } else if (name === 'game') {
       hud.classList.remove('hidden');
       gameWrap.classList.remove('hidden');
@@ -1284,6 +1291,12 @@
   function showMutationChoice() {
     stopTicking();
     const choices = pickRandomMutations(3);
+    choices.forEach(mut => {
+      if (!save.discoveredMutations.includes(mut.id)) {
+        save.discoveredMutations.push(mut.id);
+      }
+    });
+    writeSave(save);
     const container = document.getElementById('mutChoices');
     if (container) container.innerHTML = '';
 
@@ -1756,6 +1769,27 @@
   if (btnOpenSettings) btnOpenSettings.addEventListener('click', () => showScreen('settings'));
   const btnCloseSettings = document.getElementById('btnCloseSettings');
   if (btnCloseSettings) btnCloseSettings.addEventListener('click', () => showScreen('menu'));
+
+  const btnOpenMutations = document.getElementById('btnOpenMutations');
+  if (btnOpenMutations) btnOpenMutations.addEventListener('click', () => showScreen('mutations'));
+  const btnCloseMutations = document.getElementById('btnCloseMutations');
+  if (btnCloseMutations) btnCloseMutations.addEventListener('click', () => showScreen('menu'));
+
+  function renderMutationsScreen() {
+    const list = document.getElementById('mutationsList');
+    if (!list) return;
+    list.innerHTML = '';
+    MUTATION_POOL.forEach(mut => {
+      const known = save.discoveredMutations.includes(mut.id);
+      const card = document.createElement('div');
+      card.className = 'mutCard';
+      card.style.cursor = 'default';
+      card.innerHTML = known
+        ? `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`
+        : `<div class="mTitle" style="color:#555">❓ ????</div><div class="mDesc" style="color:#444">Mutation inconnue. Joue pour la découvrir.</div>`;
+      list.appendChild(card);
+    });
+  }
 
   if (btnSubmitFeedback) {
     btnSubmitFeedback.addEventListener('click', async () => {
