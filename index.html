@@ -1,3 +1,14 @@
+<!--
+============================================================
+Fichier      : index.html
+Version      : V1.03
+Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
+               #41 : ajout du bouton #btnStart manquant dans #menuOverlay.
+               #48 : reconstruction et completion integrale du fichier HTML
+               avec tous les overlays, boutons, HUD, canvas et conteneurs
+               requis par game.js.)
+============================================================
+-->
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -23,6 +34,7 @@
       <h1>🐍 Serpent Mutant</h1>
       <p class="subtitle">Mange, grandis, traverse les salles. À chaque salle franchie, choisis une mutation.</p>
       <div class="menuButtons">
+        <button id="btnStart" class="primary">🎮 Jouer</button>
         <button id="btnOpenShop">🛒 Boutique</button>
         <button id="btnOpenScores">🏆 Meilleurs scores</button>
         <button id="btnOpenFeedback">🐛 Bugs / Suggestions</button>
@@ -30,9 +42,10 @@
       </div>
       <div class="hud-block" style="margin-top: 16px;">
         <span class="hud-label">Ton pseudo</span>
-        <input type="text" id="pseudoInput" placeholder="Anonyme" maxlength="20">
+        <input type="text" id="pseudoInput" placeholder="Anonyme" maxlength="18">
         <span id="pseudoStatus"></span>
       </div>
+      <div id="cloudStatus" style="margin-top: 12px; font-size: 0.85rem; color: #9a9ab5;"></div>
     </div>
   </div>
 
@@ -44,118 +57,125 @@
         <button class="diffBtn" data-diff="easy">🟢 Facile</button>
         <button class="diffBtn" data-diff="normal">🟡 Normal</button>
         <button class="diffBtn" data-diff="hard">🔴 Difficile</button>
-        <button id="btnCancelDifficulty" class="secondary">Annuler</button>
+        <button id="btnCancelDifficulty" class="secondary">⬅ Retour</button>
       </div>
     </div>
   </div>
 
   <div id="shopOverlay" class="overlayBase hidden">
-    <div class="panel wide">
-      <h2>🛒 Boutique</h2>
-      <p>Dépense tes Éclats (🧬 <span id="shopMetaVal">0</span>) pour débloquer des styles.</p>
+    <div class="panel shopPanel">
+      <h2>🛒 Boutique de Mutations</h2>
+      <div class="shopHeader">
+        <span>Éclats : <strong id="shopMetaVal">0</strong> 🧬</span>
+      </div>
       <div class="shopTabs">
         <button class="shopTab active" data-tab="colors">🎨 Couleurs</button>
-        <button class="shopTab" data-tab="food">🍎 Nourriture</button>
-        <button class="shopTab" data-tab="bg">🌌 Fonds</button>
+        <button class="shopTab" data-tab="foods">🍎 Nourriture</button>
+        <button class="shopTab" data-tab="backgrounds">🌌 Arènes</button>
       </div>
       <div id="shopGrid" class="shopGrid"></div>
-      <button id="btnCloseShop" class="secondary">Fermer</button>
+      <button id="btnCloseShop" class="secondary" style="margin-top: 16px;">⬅ Retour</button>
     </div>
   </div>
 
   <div id="scoresOverlay" class="overlayBase hidden">
     <div class="panel">
-      <h2>🏆 Meilleurs scores</h2>
-      <div id="scoresList"></div>
+      <h2>🏆 Meilleurs Scores</h2>
+      <h3>Tes 5 meilleurs runs</h3>
+      <div id="scoresList" class="scoresList"></div>
       <div id="globalScoresSection" class="hidden">
-        <h3 style="margin-top: 16px;">🌍 Classement global</h3>
-        <div id="globalScoresList"></div>
+        <h3 style="margin-top: 20px;">🌐 Classement Global</h3>
+        <div id="globalScoresList" class="scoresList"></div>
       </div>
-      <button id="btnCloseScores" class="secondary">Fermer</button>
-    </div>
-  </div>
-
-  <div id="feedbackOverlay" class="overlayBase hidden">
-    <div class="panel">
-      <h2>🐛 Bugs / Suggestions</h2>
-      <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 16px;">
-        <button class="shopTab active" data-feedback-tab="bug">🐛 Bug</button>
-        <button class="shopTab" data-feedback-tab="suggestion">💡 Suggestion</button>
-      </div>
-      <div id="feedbackBugFields">
-        <input type="text" id="feedbackContextInput" placeholder="Où / quand ça s'est produit (salle, menu, etc.)">
-      </div>
-      <div style="margin-top: 12px;">
-        <span id="feedbackMessageLabel">Décris le problème</span>
-        <textarea id="feedbackMessageInput" placeholder="Explique ce qui s'est passé..." rows="4" style="width: 100%; margin-top: 8px; padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);"></textarea>
-      </div>
-      <div id="feedbackStatus" style="margin-top: 12px; min-height: 20px;"></div>
-      <button id="btnSubmitFeedback">Envoyer</button>
-      <button id="btnCloseFeedback" class="secondary">Fermer</button>
-    </div>
-  </div>
-
-  <div id="settingsOverlay" class="overlayBase hidden">
-    <div class="panel">
-      <h2>⚙️ Réglages</h2>
-      <p>Clique sur « Changer » puis appuie sur la touche souhaitée. Échappe annule.</p>
-      <p>Les flèches directionnelles fonctionnent toujours, quelle que soit la configuration.</p>
-      <div id="bindingsList" class="mutChoices"></div>
-      <button id="btnCloseSettings" class="secondary">Fermer</button>
+      <button id="btnCloseScores" class="secondary" style="margin-top: 16px;">⬅ Retour</button>
     </div>
   </div>
 
   <div id="mutOverlay" class="overlayBase hidden">
     <div class="panel">
-      <h2>🧬 Salle franchie !</h2>
-      <p>Choisis une mutation pour la suite du run :</p>
+      <h2>🧬 Choix de Mutation</h2>
+      <div id="specialRoomBanner" class="hidden"></div>
+      <p>Choisis une mutation pour continuer le run :</p>
       <div id="mutChoices" class="mutChoices"></div>
     </div>
   </div>
 
   <div id="overOverlay" class="overlayBase hidden">
     <div class="panel">
-      <h2>💀 Run terminé</h2>
-      <div class="statsRow">
-        <div class="statBox">
-          <div class="n" id="overScore">0</div>
-          <div class="l">Score final</div>
-        </div>
-        <div class="statBox">
-          <div class="n" id="overRoom">1</div>
-          <div class="l">Salle atteinte</div>
-        </div>
-        <div class="statBox">
-          <div class="n" id="overMeta">+0</div>
-          <div class="l">Éclats gagnés</div>
-        </div>
+      <h2>☠️ Game Over</h2>
+      <div id="newRecordMsg" class="hidden" style="color: #ffd93d; font-weight: bold; margin-bottom: 8px;">🎉 Nouveau Record !</div>
+      <p>Score : <span id="overScore">0</span> pts</p>
+      <p>Salles traversées : <span id="overRoom">1</span></p>
+      <p>Difficulté : <span id="overDiffLabel">Normal</span></p>
+      <p>Éclats gagnés : <span id="overMeta">+0</span> 🧬</p>
+      <div class="menuButtons" style="margin-top: 16px;">
+        <button id="btnRetry" class="primary">🔄 Réessayer</button>
+        <button id="btnBackToMenu" class="secondary">🏠 Menu principal</button>
       </div>
-      <div id="newRecordMsg" class="hidden" style="color: #ffd93d; font-weight: 700; margin: 12px 0;">✨ Nouveau record !</div>
-      <button id="btnRetry">Recommencer</button>
-      <button id="btnBackToMenu" class="secondary">Menu principal</button>
     </div>
   </div>
 
-  <div id="gameWrap">
-    <canvas id="gameCanvas"></canvas>
-    <div id="hud" class="hidden">
-      <div class="hud-block">
-        <span class="hud-label">💯 Score</span>
-        <span id="scoreVal" class="hud-value">0</span>
+  <div id="feedbackOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>💬 Retours & Signalements</h2>
+      <div class="shopTabs">
+        <button class="shopTab active" data-feedback-tab="bug">🐛 Bug</button>
+        <button class="shopTab" data-feedback-tab="suggestion">💡 Suggestion</button>
       </div>
-      <div class="hud-block">
-        <span class="hud-label">🚪 Salle</span>
-        <span id="roomVal" class="hud-value">1</span>
+      <div id="feedbackBugFields" style="margin-top: 12px;">
+        <label style="display: block; font-size: 0.85rem; margin-bottom: 4px;">Contexte :</label>
+        <input type="text" id="feedbackContextInput" placeholder="Ex: Salle 3, Salle Miroir..." style="width: 100%; box-sizing: border-box; padding: 8px;">
       </div>
-      <div class="hud-block">
-        <span class="hud-label">🔊 Volume musique</span>
-        <input type="range" id="volumeSlider" min="0" max="100" value="40">
+      <div style="margin-top: 12px;">
+        <label id="feedbackMessageLabel" style="display: block; font-size: 0.85rem; margin-bottom: 4px;">Décris le problème :</label>
+        <textarea id="feedbackMessageInput" rows="4" style="width: 100%; box-sizing: border-box; padding: 8px;" placeholder="Explique ce qui s'est passé..."></textarea>
+      </div>
+      <div id="feedbackStatus" style="margin-top: 8px; font-size: 0.85rem;"></div>
+      <div class="menuButtons" style="margin-top: 16px;">
+        <button id="btnSubmitFeedback" class="primary">Envoyer</button>
+        <button id="btnCloseFeedback" class="secondary">⬅ Retour</button>
       </div>
     </div>
+  </div>
+
+  <div id="settingsOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>⚙️ Réglages</h2>
+      <h3>Volume de la musique</h3>
+      <input type="range" id="volumeSlider" min="0" max="100" value="40" style="width: 80%;">
+      <h3 style="margin-top: 20px;">Contrôles (Clavier)</h3>
+      <div id="bindingsList" style="margin-bottom: 16px;"></div>
+      <button id="btnCloseSettings" class="secondary">⬅ Retour</button>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-block">
+      <span class="hud-label">Score</span>
+      <span id="scoreVal" class="hud-value">0</span>
+    </div>
+    <div class="hud-block">
+      <span class="hud-label">Salle</span>
+      <span id="roomVal" class="hud-value">1</span>
+    </div>
+    <div class="hud-block">
+      <span class="hud-label">Difficulté</span>
+      <span id="diffVal" class="hud-value">Normal</span>
+    </div>
+    <div id="specialRoomHudBlock" class="hud-block hidden">
+      <span class="hud-label">Salle spéciale</span>
+      <span id="specialRoomVal" class="hud-value"></span>
+    </div>
     <div id="mutBar"></div>
-    <button id="btnMenuFromGame" class="hud-btn secondary hidden">⏸️ Menu</button>
-    <button id="btnMuteGame" class="hud-btn secondary hidden">🔊</button>
-    <div id="touchControls">
+  </div>
+
+  <div id="gameWrap" class="hidden">
+    <div class="gameHeaderControls">
+      <button id="btnMenuFromGame" class="secondary hud-btn">🏠 Pause / Menu</button>
+      <button id="btnMuteGame" class="secondary hud-btn">🔊</button>
+    </div>
+    <canvas id="game"></canvas>
+    <div id="touchControls" style="display: none;">
       <button class="dpad" data-dir="up">⬆</button>
       <button class="dpad" data-dir="left">⬅</button>
       <button class="dpad" data-dir="right">➡</button>
