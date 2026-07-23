@@ -1,204 +1,168 @@
-<!--
-============================================================
-Fichier      : index.html
-Version      : V1.01
-Derniere maj : 23/07/2026 (ajout bouton #btnOpenSettings + overlay #settingsOverlay
-               avec #bindingsList pour l'ecran Reglages / remap de touches)
-============================================================
--->
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Serpent Mutant</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🐍 Serpent Mutant</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<h1>🐍 Serpent Mutant</h1>
-<p class="subtitle">Un Snake roguelike : traverse les salles, choisis tes mutations, survis le plus longtemps possible.</p>
-
-<div id="topBar">
-  <button id="btnMuteGame" class="secondary hud-btn hidden">🔊</button>
-  <button id="btnMenuFromGame" class="secondary hud-btn hidden">☰ Menu</button>
-</div>
-
-<div id="hud" class="hidden">
-  <div class="hud-block" id="diffHudBlock">🎯 <span class="hud-value" id="diffVal">Normal</span></div>
-  <div class="hud-block hidden" id="specialRoomHudBlock"><span class="hud-value" id="specialRoomVal"></span></div>
-  <div class="hud-block">💯 <span class="hud-label">Score</span> <span class="hud-value" id="scoreVal">0</span></div>
-  <div class="hud-block">🚪 <span class="hud-label">Salle</span> <span class="hud-value" id="roomVal">1</span></div>
-  <div class="hud-block">🏆 <span class="hud-label">Record</span> <span class="hud-value" id="bestVal">0</span></div>
-  <div class="hud-block">🧬 <span class="hud-label">Éclats</span> <span class="hud-value" id="metaVal">0</span></div>
-</div>
-
-<div id="gameWrap" class="hidden">
-  <canvas id="game" width="560" height="560"></canvas>
-</div>
-
-<div id="mutBar"></div>
-
-<div id="touchControls">
-  <div></div><button class="dpad" data-dir="up">▲</button><div></div>
-  <button class="dpad" data-dir="left">◀</button><div></div><button class="dpad" data-dir="right">▶</button>
-  <div></div><button class="dpad" data-dir="down">▼</button><div></div>
-</div>
-
-<!-- MAIN MENU -->
-<div id="menuOverlay" class="overlayBase">
-  <div class="panel" id="menuPanel">
-    <h2>🐍 Serpent Mutant</h2>
-    <p>Mange, grandis, traverse les salles. À chaque salle franchie, choisis une mutation. Une collision fatale met fin au run — tes Éclats persistent pour la boutique.</p>
-    <div class="statsRow">
-      <div class="statBox"><div class="n" id="statBest">0</div><div class="l">Meilleur score</div></div>
-      <div class="statBox"><div class="n" id="statMeta">0</div><div class="l">Éclats</div></div>
+  <div id="topBar">
+    <div class="hud-block">
+      <span class="hud-label">🏆 Record</span>
+      <span id="statBest" class="hud-value">0</span>
     </div>
-    <div style="margin: 14px 0; text-align: left;">
-      <label for="pseudoInput" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Ton pseudo (affiché dans le classement)</label>
-      <input type="text" id="pseudoInput" maxlength="18" placeholder="Anonyme"
-        style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit;">
-      <div id="pseudoStatus" style="font-size: 0.75rem; margin-top: 4px; color: #9a9ab5;"></div>
-    </div>
-    <div style="margin: 14px 0; text-align: left;">
-      <label for="volumeSlider" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">🔊 Volume musique</label>
-      <input type="range" id="volumeSlider" min="0" max="100" value="40" style="width: 100%;">
-    </div>
-    <div id="cloudStatus" style="font-size: 0.75rem; color: #9a9ab5; margin-bottom: 6px; text-align: center;"></div>
-    <div class="menuButtons">
-      <button id="btnStart">▶ Commencer un run</button>
-      <button id="btnOpenShop" class="secondary">🛒 Boutique</button>
-      <button id="btnOpenScores" class="secondary">🏆 Scores</button>
-      <button id="btnOpenFeedback" class="secondary">🐛 Bugs/Suggestions</button>
-      <button id="btnOpenSettings" class="secondary">⚙️ Réglages</button>
+    <div class="hud-block">
+      <span class="hud-label">🧬 Éclats</span>
+      <span id="statMeta" class="hud-value">0</span>
     </div>
   </div>
-</div>
 
-<!-- DIFFICULTY SELECT -->
-<div id="difficultyOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2>🎯 Choisis ta difficulté</h2>
-    <p>La vitesse et les points gagnés augmentent avec la difficulté.</p>
-    <div class="menuButtons">
-      <button class="secondary diffBtn" data-diff="easy">
-        🟢 Facile <span style="opacity:0.7; font-weight:400;">— Vitesse x1, Points x1</span>
-      </button>
-      <button class="secondary diffBtn" data-diff="normal">
-        🟡 Normal <span style="opacity:0.7; font-weight:400;">— Vitesse x2, Points x2</span>
-      </button>
-      <button class="secondary diffBtn" data-diff="hard">
-        🔴 Difficile <span style="opacity:0.7; font-weight:400;">— Vitesse x3, Points x3</span>
-      </button>
-      <button id="btnCancelDifficulty" class="secondary">← Retour</button>
-    </div>
-  </div>
-</div>
-
-<!-- SHOP -->
-<div id="shopOverlay" class="overlayBase hidden">
-  <div class="panel wide">
-    <h2>🛒 Boutique</h2>
-    <p>Dépense tes Éclats (🧬 <span id="shopMetaVal">0</span>) pour débloquer des styles. Les objets se débloquent par paliers.</p>
-    <div class="shopTabs">
-      <div class="shopTab active" data-tab="colors">🎨 Couleurs</div>
-      <div class="shopTab" data-tab="foods">🍎 Nourriture</div>
-      <div class="shopTab" data-tab="backgrounds">🌌 Fonds</div>
-    </div>
-    <div class="shopGrid" id="shopGrid"></div>
-    <div class="menuButtons">
-      <button id="btnCloseShop" class="secondary">← Retour au menu</button>
-    </div>
-  </div>
-</div>
-
-<!-- SCORES -->
-<div id="scoresOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2>🏆 Meilleurs scores</h2>
-    <div id="scoresList"></div>
-    <div id="globalScoresSection" class="hidden">
-      <h2 style="margin-top:20px; font-size:1.1rem;">🌍 Classement global</h2>
-      <div id="globalScoresList"></div>
-    </div>
-    <div class="menuButtons">
-      <button id="btnCloseScores" class="secondary">← Retour au menu</button>
-    </div>
-  </div>
-</div>
-
-<!-- FEEDBACK (Bugs/Suggestions) -->
-<div id="feedbackOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2>🐛 Bugs / Suggestions</h2>
-    <div class="shopTabs">
-      <div class="shopTab active" data-feedback-tab="bug">🐛 Bug</div>
-      <div class="shopTab" data-feedback-tab="suggestion">💡 Suggestion</div>
-    </div>
-
-    <div id="feedbackBugFields">
-      <div style="margin: 14px 0; text-align: left;">
-        <label for="feedbackContextInput" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Où / quand ça s'est produit (salle, menu, etc.)</label>
-        <input type="text" id="feedbackContextInput" maxlength="120" placeholder="Ex : Salle 7, en salle Volcan"
-          style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit;">
+  <div id="menuOverlay" class="overlayBase">
+    <div class="panel">
+      <h1>🐍 Serpent Mutant</h1>
+      <p class="subtitle">Mange, grandis, traverse les salles. À chaque salle franchie, choisis une mutation.</p>
+      <div class="menuButtons">
+        <button id="btnOpenShop">🛒 Boutique</button>
+        <button id="btnOpenScores">🏆 Meilleurs scores</button>
+        <button id="btnOpenFeedback">🐛 Bugs / Suggestions</button>
+        <button id="btnOpenSettings">⚙️ Réglages</button>
+      </div>
+      <div class="hud-block" style="margin-top: 16px;">
+        <span class="hud-label">Ton pseudo</span>
+        <input type="text" id="pseudoInput" placeholder="Anonyme" maxlength="20">
+        <span id="pseudoStatus"></span>
       </div>
     </div>
+  </div>
 
-    <div style="margin: 14px 0; text-align: left;">
-      <label for="feedbackMessageInput" id="feedbackMessageLabel" style="font-size: 0.8rem; color: #9a9ab5; display: block; margin-bottom: 6px;">Décris le problème</label>
-      <textarea id="feedbackMessageInput" maxlength="1000" rows="5" placeholder="Explique ce qui s'est passé..."
-        style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color: #f5f5f5; font-size: 0.95rem; font-family: inherit; resize: vertical;"></textarea>
+  <div id="difficultyOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>🎯 Choisis ta difficulté</h2>
+      <p>La vitesse et les points gagnés augmentent avec la difficulté.</p>
+      <div class="menuButtons">
+        <button class="diffBtn" data-diff="easy">🟢 Facile</button>
+        <button class="diffBtn" data-diff="normal">🟡 Normal</button>
+        <button class="diffBtn" data-diff="hard">🔴 Difficile</button>
+        <button id="btnCancelDifficulty" class="secondary">Annuler</button>
+      </div>
     </div>
-    <div id="feedbackStatus" style="font-size: 0.75rem; margin-bottom: 6px; color: #9a9ab5; min-height: 1em;"></div>
+  </div>
 
-    <div class="menuButtons">
+  <div id="shopOverlay" class="overlayBase hidden">
+    <div class="panel wide">
+      <h2>🛒 Boutique</h2>
+      <p>Dépense tes Éclats (🧬 <span id="shopMetaVal">0</span>) pour débloquer des styles.</p>
+      <div class="shopTabs">
+        <button class="shopTab active" data-tab="colors">🎨 Couleurs</button>
+        <button class="shopTab" data-tab="food">🍎 Nourriture</button>
+        <button class="shopTab" data-tab="bg">🌌 Fonds</button>
+      </div>
+      <div id="shopGrid" class="shopGrid"></div>
+      <button id="btnCloseShop" class="secondary">Fermer</button>
+    </div>
+  </div>
+
+  <div id="scoresOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>🏆 Meilleurs scores</h2>
+      <div id="scoresList"></div>
+      <div id="globalScoresSection" class="hidden">
+        <h3 style="margin-top: 16px;">🌍 Classement global</h3>
+        <div id="globalScoresList"></div>
+      </div>
+      <button id="btnCloseScores" class="secondary">Fermer</button>
+    </div>
+  </div>
+
+  <div id="feedbackOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>🐛 Bugs / Suggestions</h2>
+      <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 16px;">
+        <button class="shopTab active" data-feedback-tab="bug">🐛 Bug</button>
+        <button class="shopTab" data-feedback-tab="suggestion">💡 Suggestion</button>
+      </div>
+      <div id="feedbackBugFields">
+        <input type="text" id="feedbackContextInput" placeholder="Où / quand ça s'est produit (salle, menu, etc.)">
+      </div>
+      <div style="margin-top: 12px;">
+        <span id="feedbackMessageLabel">Décris le problème</span>
+        <textarea id="feedbackMessageInput" placeholder="Explique ce qui s'est passé..." rows="4" style="width: 100%; margin-top: 8px; padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);"></textarea>
+      </div>
+      <div id="feedbackStatus" style="margin-top: 12px; min-height: 20px;"></div>
       <button id="btnSubmitFeedback">Envoyer</button>
-      <button id="btnCloseFeedback" class="secondary">← Retour au menu</button>
+      <button id="btnCloseFeedback" class="secondary">Fermer</button>
     </div>
   </div>
-</div>
 
-<!-- SETTINGS -->
-<div id="settingsOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2>⚙️ Réglages</h2>
-    <p>Clique sur « Changer » puis appuie sur la touche souhaitée. Échappe annule.</p>
-    <div id="bindingsList"></div>
-    <p style="font-size:0.75rem; color:#9a9ab5; margin-top:6px;">Les flèches directionnelles fonctionnent toujours, quelle que soit la configuration.</p>
-    <div class="menuButtons">
-      <button id="btnCloseSettings" class="secondary">← Retour au menu</button>
+  <div id="settingsOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>⚙️ Réglages</h2>
+      <p>Clique sur « Changer » puis appuie sur la touche souhaitée. Échappe annule.</p>
+      <p>Les flèches directionnelles fonctionnent toujours, quelle que soit la configuration.</p>
+      <div id="bindingsList" class="mutChoices"></div>
+      <button id="btnCloseSettings" class="secondary">Fermer</button>
     </div>
   </div>
-</div>
 
-<!-- MUTATION CHOICE -->
-<div id="mutOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2>🧬 Salle franchie !</h2>
-    <div id="specialRoomBanner" class="hidden"></div>
-    <p>Choisis une mutation pour la suite du run :</p>
-    <div class="mutChoices" id="mutChoices"></div>
-  </div>
-</div>
-
-<!-- GAME OVER -->
-<div id="overOverlay" class="overlayBase hidden">
-  <div class="panel">
-    <h2 id="overTitle">💀 Run terminé</h2>
-    <p id="overDiffLabel" style="margin-bottom:6px; font-weight:700; color:#b8b8d0;"></p>
-    <div class="statsRow">
-      <div class="statBox"><div class="n" id="overScore">0</div><div class="l">Score final</div></div>
-      <div class="statBox"><div class="n" id="overRoom">1</div><div class="l">Salle atteinte</div></div>
-      <div class="statBox"><div class="n" id="overMeta">+0</div><div class="l">Éclats gagnés</div></div>
-    </div>
-    <p id="newRecordMsg" class="hidden" style="color:#ffd93d;font-weight:700;">✨ Nouveau record !</p>
-    <div class="menuButtons">
-      <button id="btnRetry">↻ Nouveau run</button>
-      <button id="btnBackToMenu" class="secondary">☰ Retour au menu</button>
+  <div id="mutOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>🧬 Salle franchie !</h2>
+      <p>Choisis une mutation pour la suite du run :</p>
+      <div id="mutChoices" class="mutChoices"></div>
     </div>
   </div>
-</div>
 
-<script src="game.js"></script>
+  <div id="overOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>💀 Run terminé</h2>
+      <div class="statsRow">
+        <div class="statBox">
+          <div class="n" id="overScore">0</div>
+          <div class="l">Score final</div>
+        </div>
+        <div class="statBox">
+          <div class="n" id="overRoom">1</div>
+          <div class="l">Salle atteinte</div>
+        </div>
+        <div class="statBox">
+          <div class="n" id="overMeta">+0</div>
+          <div class="l">Éclats gagnés</div>
+        </div>
+      </div>
+      <div id="newRecordMsg" class="hidden" style="color: #ffd93d; font-weight: 700; margin: 12px 0;">✨ Nouveau record !</div>
+      <button id="btnRetry">Recommencer</button>
+      <button id="btnBackToMenu" class="secondary">Menu principal</button>
+    </div>
+  </div>
+
+  <div id="gameWrap">
+    <canvas id="gameCanvas"></canvas>
+    <div id="hud" class="hidden">
+      <div class="hud-block">
+        <span class="hud-label">💯 Score</span>
+        <span id="scoreVal" class="hud-value">0</span>
+      </div>
+      <div class="hud-block">
+        <span class="hud-label">🚪 Salle</span>
+        <span id="roomVal" class="hud-value">1</span>
+      </div>
+      <div class="hud-block">
+        <span class="hud-label">🔊 Volume musique</span>
+        <input type="range" id="volumeSlider" min="0" max="100" value="40">
+      </div>
+    </div>
+    <div id="mutBar"></div>
+    <button id="btnMenuFromGame" class="hud-btn secondary hidden">⏸️ Menu</button>
+    <button id="btnMuteGame" class="hud-btn secondary hidden">🔊</button>
+    <div id="touchControls">
+      <button class="dpad" data-dir="up">⬆</button>
+      <button class="dpad" data-dir="left">⬅</button>
+      <button class="dpad" data-dir="right">➡</button>
+      <button class="dpad" data-dir="down">⬇</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
 </body>
 </html>
