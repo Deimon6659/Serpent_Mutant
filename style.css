@@ -1,8 +1,8 @@
 /*
 ============================================================
 Fichier      : style.css
-Version      : V1.00
-Derniere maj : 20/07/2026 (nouvel audit du 20/07/2026 - aucun bug trouve, inchange)
+Version      : V1.01
+Derniere maj : 23/07/2026 (ajout .bindingRow et .bindingKey pour l'ecran Reglages)
 ============================================================
 */
 :root {
@@ -338,6 +338,30 @@ Derniere maj : 20/07/2026 (nouvel audit du 20/07/2026 - aucun bug trouve, inchan
   font-size: 0.8rem;
   color: #d8b8c8;
   line-height: 1.4;
+}
+
+/* Settings / Key bindings */
+.bindingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255,255,255,0.05);
+  border-radius: 12px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  gap: 12px;
+}
+.bindingKey {
+  font-weight: 800;
+  color: var(--accent3);
+  min-width: 70px;
+  text-align: center;
+  background: rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-family: monospace;
+  font-size: 0.9rem;
+  flex-shrink: 0;
 }
 
 #feedbackMessageInput,
