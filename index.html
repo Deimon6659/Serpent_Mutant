@@ -1,8 +1,9 @@
 <!--
 ============================================================
 Fichier      : index.html
-Version      : V1.00
-Derniere maj : 20/07/2026 (nouvel audit du 20/07/2026 - aucun bug trouve, inchange)
+Version      : V1.01
+Derniere maj : 23/07/2026 (ajout bouton #btnOpenSettings + overlay #settingsOverlay
+               avec #bindingsList pour l'ecran Reglages / remap de touches)
 ============================================================
 -->
 <!DOCTYPE html>
@@ -69,6 +70,7 @@ Derniere maj : 20/07/2026 (nouvel audit du 20/07/2026 - aucun bug trouve, inchan
       <button id="btnOpenShop" class="secondary">🛒 Boutique</button>
       <button id="btnOpenScores" class="secondary">🏆 Scores</button>
       <button id="btnOpenFeedback" class="secondary">🐛 Bugs/Suggestions</button>
+      <button id="btnOpenSettings" class="secondary">⚙️ Réglages</button>
     </div>
   </div>
 </div>
@@ -152,6 +154,19 @@ Derniere maj : 20/07/2026 (nouvel audit du 20/07/2026 - aucun bug trouve, inchan
     <div class="menuButtons">
       <button id="btnSubmitFeedback">Envoyer</button>
       <button id="btnCloseFeedback" class="secondary">← Retour au menu</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS -->
+<div id="settingsOverlay" class="overlayBase hidden">
+  <div class="panel">
+    <h2>⚙️ Réglages</h2>
+    <p>Clique sur « Changer » puis appuie sur la touche souhaitée. Échappe annule.</p>
+    <div id="bindingsList"></div>
+    <p style="font-size:0.75rem; color:#9a9ab5; margin-top:6px;">Les flèches directionnelles fonctionnent toujours, quelle que soit la configuration.</p>
+    <div class="menuButtons">
+      <button id="btnCloseSettings" class="secondary">← Retour au menu</button>
     </div>
   </div>
 </div>
