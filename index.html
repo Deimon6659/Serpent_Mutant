@@ -36,6 +36,7 @@ Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
       <div class="menuButtons">
         <button id="btnStart" class="primary">🎮 Jouer</button>
         <button id="btnOpenShop">🛒 Boutique</button>
+        <button id="btnOpenMutations">🧬 Mutations</button>
         <button id="btnOpenScores">🏆 Meilleurs scores</button>
         <button id="btnOpenFeedback">🐛 Bugs / Suggestions</button>
         <button id="btnOpenSettings">⚙️ Réglages</button>
@@ -135,6 +136,15 @@ Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
         <button id="btnSubmitFeedback" class="primary">Envoyer</button>
         <button id="btnCloseFeedback" class="secondary">⬅ Retour</button>
       </div>
+    </div>
+  </div>
+
+  <div id="mutationsOverlay" class="overlayBase hidden">
+    <div class="panel wide">
+      <h2>🧬 Codex des Mutations</h2>
+      <p>Découvre les mutations en jouant — elles se dévoilent dès qu'elles t'ont été proposées.</p>
+      <div id="mutationsList" class="mutChoices" style="max-height: 60vh; overflow-y: auto;"></div>
+      <button id="btnCloseMutations" class="secondary" style="margin-top: 16px;">⬅ Retour</button>
     </div>
   </div>
 
