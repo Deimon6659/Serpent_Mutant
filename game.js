@@ -35,6 +35,117 @@
   };
 
   // ============================================================
+  // AUDIO
+  // ============================================================
+
+  const MUSIC_TRACKS = {
+    classic: 'audio/theme-classic.mp3',
+    ice:     'audio/theme-ice.mp3',
+    volcano: 'audio/theme-volcano.mp3',
+  };
+
+  const Audio = {
+    current:      null,
+    enabled:      localStorage.getItem('serpentMutant_muted') !== '1',
+    volume:       (() => {
+      const v = parseFloat(localStorage.getItem('serpentMutant_volume'));
+      return isNaN(v) ? 0.4 : v;
+    })(),
+    lastTrack:    null,
+    _generation:  0,
+    _bufferCache: {},
+    _audioCtx:    null,
+
+    getCtx() {
+      if (!this._audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        this._audioCtx = new AC();
+      }
+      return this._audioCtx;
+    },
+
+    play(trackKey, { reversed = false } = {}) {
+      this.lastTrack = { trackKey, reversed };
+      if (!this.enabled) return;
+      this.stop();
+      const src = MUSIC_TRACKS[trackKey];
+      if (!src) return;
+      if (reversed) { this._playReversed(src); return; }
+      const audio = new window.Audio(src);
+      audio.loop   = true;
+      audio.volume = this.volume;
+      audio.play().catch(() => {});
+      this.current = audio;
+    },
+
+    stop() {
+      this._generation++;
+      if (this.current) {
+        this.current.pause();
+        this.current = null;
+      }
+    },
+
+    setVolume(v) {
+      this.volume = Math.max(0, Math.min(1, v));
+      localStorage.setItem('serpentMutant_volume', String(this.volume));
+      if (this.current) {
+        if (this.current.gainNode) this.current.gainNode.gain.value = this.volume;
+        else if (typeof this.current.volume === 'number') this.current.volume = this.volume;
+      }
+    },
+
+    setMuted(muted) {
+      this.enabled = !muted;
+      localStorage.setItem('serpentMutant_muted', muted ? '1' : '0');
+      if (muted) {
+        this.stop();
+      } else if (this.lastTrack) {
+        this.play(this.lastTrack.trackKey, { reversed: this.lastTrack.reversed });
+      }
+    },
+
+    async _playReversed(src) {
+      const gen = ++this._generation;
+      try {
+        const ctx = this.getCtx();
+        let buffer = this._bufferCache[src];
+        if (!buffer) {
+          const res     = await fetch(src);
+          if (gen !== this._generation) return;
+          const ab      = await res.arrayBuffer();
+          if (gen !== this._generation) return;
+          const decoded = await ctx.decodeAudioData(ab);
+          if (gen !== this._generation) return;
+          for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+            decoded.getChannelData(ch).reverse();
+          }
+          buffer = decoded;
+          this._bufferCache[src] = buffer;
+        } else if (gen !== this._generation) {
+          return;
+        }
+        const source   = ctx.createBufferSource();
+        source.buffer  = buffer;
+        source.loop    = true;
+        const gain     = ctx.createGain();
+        gain.gain.value = this.volume;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+        await ctx.resume();
+        if (gen !== this._generation) return;
+        source.start(0);
+        this.current = {
+          pause:    () => { try { source.stop(); } catch (e) {} },
+          gainNode: gain,
+        };
+      } catch (err) {
+        console.warn('Lecture inversée impossible :', err);
+      }
+    },
+  };
+
+  // ============================================================
   // DONNÉES DE JEU
   // ============================================================
 
@@ -395,6 +506,17 @@
       
       // Game buttons
       document.getElementById('btnPause').addEventListener('click', () => Game.togglePause());
+      
+      // Bouton mute
+      const btnMute = document.getElementById('btnMute');
+      if (btnMute) {
+        btnMute.textContent = Audio.enabled ? '🔊' : '🔇';
+        btnMute.addEventListener('click', () => {
+          Audio.setMuted(Audio.enabled); // bascule : si enabled, on mute, et vice versa
+          btnMute.textContent = Audio.enabled ? '🔊' : '🔇';
+        });
+      }
+      
       document.getElementById('btnResume').addEventListener('click', () => Game.resume());
       document.getElementById('btnQuitRun').addEventListener('click', () => {
         Game.stop();
@@ -887,6 +1009,9 @@
       // Spawn food
       this.spawnFood();
       
+      // Lancement de la musique
+      Audio.play('classic');
+      
       UI.showScreen('game');
       UI.updateHUD();
       UI.updateMutBar();
@@ -900,6 +1025,8 @@
       g.alive = false;
       g.paused = false;
       g.isTicking = false;
+      
+      Audio.stop();
       
       if (this.animFrameId) {
         cancelAnimationFrame(this.animFrameId);
@@ -1012,6 +1139,7 @@
     
     setupSpecialRoom(type) {
       const g = State.game;
+      const wasSpecial = g.specialRoom;
       g.specialRoom = type;
       g.iceCells = [];
       g.lavaCells = [];
@@ -1035,9 +1163,16 @@
             g.iceCells.push({ x: ix, y: iy });
           }
         }
+        Audio.play('ice');
       } else if (type === 'volcano') {
         g.lavaCycleAt = Date.now() + CONFIG.LAVA_CYCLE_MS;
         this.cycleLava();
+        Audio.play('volcano');
+      } else if (type === 'mirror') {
+        Audio.play('classic', { reversed: true });
+      } else if (wasSpecial) {
+        // Retour à une salle normale après une salle spéciale
+        Audio.play('classic');
       }
     },
     
@@ -1328,6 +1463,8 @@
       g.alive = false;
       g.paused = false;
       g.isTicking = false;
+      
+      Audio.stop();
       
       const eclats = Math.max(1, Math.floor(g.score / 10) + g.room);
       const isRecord = g.score > (State.player?.bestScore || 0);
