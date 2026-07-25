@@ -1,1961 +1,1620 @@
 /**
  * ============================================================
- * Fichier      : game.js
- * Version      : V1.16
- * Derniere maj : 24/07/2026 (corrections red-team C-02, C-03, H-03, M-01, M-03, M-05 :
- *                C-02 : ajout de runStartTime (initialise dans resetRunState) et
- *                       transmission de elapsed = Date.now() - runStartTime dans
- *                       submitScoreToCloud() pour la validation de plausibilite
- *                       cote serveur (voir Code.gs V1.08).
- *                C-03 : ajout de syncEclatsFromCloud() appelee au demarrage ;
- *                       si le cloud possede plus d'eclats que le localStorage
- *                       (autre appareil, reset local), le local est mis a jour.
- *                       Si le local est superieur (jeu hors-ligne), le cloud est
- *                       resynchronise pour corriger les eventuel ecarts.
- *                H-03 : ajout du check isIceCell(nx, ny) dans la boucle de
- *                       deplacement magnetique pour empecher la nourriture
- *                       d'etre attire sur une case de glace (case non accessible).
- *                M-01 : vrai mode pause implementé via pauseGame() / resumeGame().
- *                       btnMenuFromGame bascule entre pause et reprise sans tuer
- *                       le run. La touche Echap fait de meme. Un overlay dedie
- *                       (#pauseOverlay) propose Reprendre ou Quitter le run.
- *                M-03 : remplacement de la condition fruitsEatenThisRun % 5 === 0
- *                       par un compteur dedie fruitsEatenSinceShield, remis a zero
- *                       a chaque prise (ou reprise) de la mutation Bouclier.
- *                       La recharge se declenche exactement tous les 5 fruits
- *                       apres la prise de la mutation, sans ambiguite de modulo.
- *                M-05 : lastRunContext sauvegarde dans endRun() avant la mort,
- *                       utilise dans openFeedbackScreen() pour afficher le vrai
- *                       contexte de salle post-mortem (ex: "Salle 7 (Salle Volcan)
- *                       (post-mortem)") au lieu de "Menu".)
- * — Historique precedent :
- *   V1.15 / 23/07/2026 - bugs #41, #42, #43, #46, #47 corriges
+ * SERPENT MUTANT - Game Engine
+ * Version: 2.0
+ * Architecture: Site statique + Google Sheets backend
+ * Améliorations:
+ *   - Système de compte avec mot de passe (SHA-256)
+ *   - Code modularisé et optimisé
+ *   - Meilleure gestion d'erreurs
+ *   - Cache et performance optimisés
  * ============================================================
  */
+
 (() => {
   'use strict';
 
   // ============================================================
-  // Persistence
+  // CONFIGURATION
   // ============================================================
-  const SAVE_KEY = 'serpentMutant_save_v2';
-
-  function defaultSave() {
-    return {
-      best: 0,
-      meta: 0,
-      topScores: [],
-      unlocked: { colors: ['teal'], foods: ['classic'], backgrounds: ['default'] },
-      equipped: { color: 'teal', food: 'classic', background: 'default' },
-      discoveredMutations: []
-    };
-  }
-
-  function loadSave() {
-    try {
-      const raw = localStorage.getItem(SAVE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const d = defaultSave();
-        return {
-          best: typeof parsed.best === 'number' ? parsed.best : d.best,
-          meta: typeof parsed.meta === 'number' ? parsed.meta : d.meta,
-          topScores: Array.isArray(parsed.topScores) ? parsed.topScores : d.topScores,
-          unlocked: {
-            colors:      parsed.unlocked?.colors      || d.unlocked.colors,
-            foods:       parsed.unlocked?.foods       || d.unlocked.foods,
-            backgrounds: parsed.unlocked?.backgrounds || d.unlocked.backgrounds
-          },
-          equipped: {
-            color:      parsed.equipped?.color      || d.equipped.color,
-            food:       parsed.equipped?.food       || d.equipped.food,
-            background: parsed.equipped?.background || d.equipped.background
-          },
-          discoveredMutations: Array.isArray(parsed.discoveredMutations) ? parsed.discoveredMutations : d.discoveredMutations
-        };
-      }
-    } catch (e) {}
-    try {
-      const legacy = localStorage.getItem('serpentMutant_save_v1');
-      if (legacy) {
-        const p = JSON.parse(legacy);
-        const d = defaultSave();
-        d.best = p.best || 0;
-        d.meta = p.meta || 0;
-        return d;
-      }
-    } catch (e) {}
-    return defaultSave();
-  }
-
-  function writeSave(save) {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {}
-  }
-
-  let save = loadSave();
-
-  // ============================================================
-  // Key bindings (remap)
-  // ============================================================
-  const DEFAULT_BINDINGS = { up: 'w', down: 's', left: 'a', right: 'd' };
-  const BINDING_BLOCKED  = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Escape','Tab']);
-
-  function loadBindings() {
-    try {
-      const raw = localStorage.getItem('serpentMutant_keybindings');
-      if (raw) {
-        const p = JSON.parse(raw);
-        return {
-          up:    p.up    || DEFAULT_BINDINGS.up,
-          down:  p.down  || DEFAULT_BINDINGS.down,
-          left:  p.left  || DEFAULT_BINDINGS.left,
-          right: p.right || DEFAULT_BINDINGS.right
-        };
-      }
-    } catch (e) {}
-    return { ...DEFAULT_BINDINGS };
-  }
-  function saveBindings(b) {
-    try { localStorage.setItem('serpentMutant_keybindings', JSON.stringify(b)); } catch (e) {}
-  }
-  let keyBindings  = loadBindings();
-  let capturingDir = null;
-
-  // ============================================================
-  // Musique de fond
-  // ============================================================
-  const MUSIC_TRACKS = {
-    classic: 'audio/theme-classic.mp3',
-    ice:     'audio/theme-ice.mp3',
-    volcano: 'audio/theme-volcano.mp3'
+  
+  const CONFIG = {
+    // URL du Google Apps Script (à remplacer par ta propre URL)
+    WEBAPP_URL: 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec',
+    
+    // Grille de jeu
+    GRID_SIZE: 20,
+    
+    // Timing
+    LAVA_CYCLE_MS: 6000,
+    LAVA_ARM_DELAY: 2500,
+    
+    // Stockage local
+    SAVE_KEY: 'serpentMutant_v2',
+    SESSION_KEY: 'serpentMutant_session',
   };
 
-  let currentAudio   = null;
-  let musicEnabled   = localStorage.getItem('serpentMutant_muted') !== '1';
-  let musicVolume    = (() => {
-    const v = parseFloat(localStorage.getItem('serpentMutant_volume'));
-    return isNaN(v) ? 0.4 : v;
-  })();
-  let lastPlayedTrack  = null;
-  let _musicGeneration = 0;
-
-  function setMusicVolume(v) {
-    musicVolume = Math.max(0, Math.min(1, v));
-    localStorage.setItem('serpentMutant_volume', String(musicVolume));
-    if (currentAudio && currentAudio.gainNode) {
-      currentAudio.gainNode.gain.value = musicVolume;
-    } else if (currentAudio && typeof currentAudio.volume === 'number') {
-      currentAudio.volume = musicVolume;
-    }
-  }
-
-  function setMusicMuted(muted) {
-    musicEnabled = !muted;
-    localStorage.setItem('serpentMutant_muted', muted ? '1' : '0');
-    if (muted) {
-      stopMusic();
-    } else if (lastPlayedTrack) {
-      playMusic(lastPlayedTrack.trackKey, { reversed: lastPlayedTrack.reversed });
-    }
-  }
-
-  function stopMusic() {
-    _musicGeneration++;
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-      currentAudio = null;
-    }
-  }
-
-  function playMusic(trackKey, { reversed = false } = {}) {
-    lastPlayedTrack = { trackKey, reversed };
-    if (!musicEnabled) return;
-    stopMusic();
-    const src = MUSIC_TRACKS[trackKey];
-    if (!src) return;
-    if (reversed) { playReversedTrack(src); return; }
-    const audio = new Audio(src);
-    audio.loop   = true;
-    audio.volume = musicVolume;
-    audio.play().catch(() => {});
-    currentAudio = audio;
-  }
-
-  let reversedBufferCache = {};
-  let sharedAudioCtx      = null;
-  function getAudioCtx_() {
-    if (!sharedAudioCtx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      sharedAudioCtx = new AC();
-    }
-    return sharedAudioCtx;
-  }
-
-  async function playReversedTrack(src) {
-    const myGeneration = _musicGeneration;
-    try {
-      const audioCtx = getAudioCtx_();
-      let buffer = reversedBufferCache[src];
-      if (!buffer) {
-        const response    = await fetch(src);
-        if (myGeneration !== _musicGeneration) return;
-        const arrayBuffer = await response.arrayBuffer();
-        if (myGeneration !== _musicGeneration) return;
-        const decoded     = await audioCtx.decodeAudioData(arrayBuffer);
-        if (myGeneration !== _musicGeneration) return;
-        for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-          decoded.getChannelData(ch).reverse();
-        }
-        buffer = decoded;
-        reversedBufferCache[src] = buffer;
-      } else if (myGeneration !== _musicGeneration) {
-        return;
-      }
-      const source   = audioCtx.createBufferSource();
-      source.buffer  = buffer;
-      source.loop    = true;
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = musicVolume;
-      source.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      await audioCtx.resume();
-      if (myGeneration !== _musicGeneration) return;
-      source.start(0);
-      currentAudio = {
-        pause: () => { try { source.stop(); } catch (e) {} },
-        currentTime: 0,
-        gainNode
-      };
-    } catch (err) {
-      console.warn('Lecture inversée impossible :', err);
-    }
-  }
-
   // ============================================================
-  // Cloud backend
+  // DONNÉES DE JEU
   // ============================================================
-  const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNEhkZOHMhBnBE4Ucba8cRTvpy-YBbRlrlgtrku_hksrXsuIm_o-9rt-VfFZEfb3Vy_g/exec';
-
-  function getOrCreatePlayerId() {
-    let id = localStorage.getItem('serpentMutant_playerId');
-    if (!id) {
-      id = 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      localStorage.setItem('serpentMutant_playerId', id);
-    }
-    return id;
-  }
-  const PLAYER_ID = getOrCreatePlayerId();
-
-  function cloudEnabled() {
-    return typeof WEBAPP_URL === 'string' && WEBAPP_URL.trim().length > 0;
-  }
-
-  let lastCloudErrorTimestamp = 0;
-  const CLOUD_ERROR_DISPLAY_MS = 8000;
-
-  function setCloudStatus(text, isError) {
-    const el = document.getElementById('cloudStatus');
-    if (!el) return;
-    el.textContent   = text;
-    el.style.color   = isError ? '#ff6b9d' : '#9a9ab5';
-    if (isError) lastCloudErrorTimestamp = Date.now();
-  }
-
-  function updateCloudStatusIdle() {
-    if (Date.now() - lastCloudErrorTimestamp < CLOUD_ERROR_DISPLAY_MS) return;
-    if (!cloudEnabled()) {
-      setCloudStatus('☁️ Mode local uniquement (aucune URL cloud configurée)');
-    } else {
-      setCloudStatus('☁️ Connecté au classement en ligne');
-    }
-  }
-
-  // C-02 : Parametre elapsed ajoute pour la validation de plausibilite cote serveur
-  async function submitScoreToCloud(scoreVal, roomVal, eclatsGagnes, difficulty, elapsed = 0) {
-    if (!cloudEnabled()) return;
-    try {
-      const res = await fetch(WEBAPP_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          action:    'submitScore',
-          playerId:  PLAYER_ID,
-          pseudo:    (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
-          score:     scoreVal,
-          room:      roomVal,
-          difficulty,
-          eclats:    eclatsGagnes,
-          elapsed:   Math.round(elapsed)   // C-02 : duree du run en ms
-        })
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || (data && data.error)) {
-        if (data && data.error === 'pseudo_taken') {
-          setCloudStatus('⚠️ Pseudo déjà pris — choisis-en un autre', true);
-        } else if (data && data.error === 'rate_limited') {
-          setCloudStatus('⚠️ Trop de requêtes, réessaie dans quelques secondes', true);
-        } else if (data && data.error === 'score_implausible') {
-          setCloudStatus('⚠️ Score non validé (valeur implausible)', true);
-        } else {
-          setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
-        }
-      } else {
-        setCloudStatus('✅ Score envoyé au classement en ligne');
-        if (data && data.pseudo && data.claimed) lockPseudo(data.pseudo);
-      }
-    } catch (err) {
-      console.warn('Envoi du score au cloud a échoué :', err);
-      setCloudStatus('⚠️ Envoi au cloud impossible', true);
-    }
-  }
-
-  async function submitFeedbackToCloud(type, context, message) {
-    if (!cloudEnabled()) return { ok: false, error: 'no_cloud' };
-    try {
-      const res = await fetch(WEBAPP_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          action:   'submitFeedback',
-          playerId: PLAYER_ID,
-          pseudo:   (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
-          type,
-          context:  context || '',
-          message
-        })
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || (data && data.error)) {
-        return { ok: false, error: (data && data.error) ? data.error : ('HTTP ' + res.status) };
-      }
-      return { ok: true };
-    } catch (err) {
-      console.warn('Envoi du feedback a échoué :', err);
-      return { ok: false, error: 'network' };
-    }
-  }
-
-  async function saveEclatsToCloud(totalEclats) {
-    if (!cloudEnabled()) return;
-    try {
-      const res = await fetch(WEBAPP_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          action:      'saveEclats',
-          playerId:    PLAYER_ID,
-          totalEclats
-        })
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || (data && data.error)) {
-        setCloudStatus('⚠️ Éclats non synchronisés (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
-      }
-    } catch (err) {
-      console.warn('Sauvegarde des Éclats au cloud a échoué :', err);
-      setCloudStatus('⚠️ Synchro Éclats impossible', true);
-    }
-  }
-
-  // C-03 : Synchronisation des eclats au demarrage — le cloud est la reference
-  // Si cloud > local : mise a jour du local (autre appareil ou reset).
-  // Si local > cloud : re-synchronisation du cloud (jeu hors-ligne legitime).
-  async function syncEclatsFromCloud() {
-    if (!cloudEnabled()) return;
-    try {
-      const res  = await fetch(WEBAPP_URL + '?action=getPlayer&playerId=' + encodeURIComponent(PLAYER_ID));
-      const data = await res.json().catch(() => null);
-      if (!data || typeof data.eclats !== 'number' || data.eclats < 0) return;
-      const cloudEclats = data.eclats;
-      if (cloudEclats > save.meta) {
-        // Le cloud a plus d'eclats : on met le local a jour
-        save.meta = cloudEclats;
-        writeSave(save);
-        refreshTopHud();
-        setCloudStatus('☁️ Éclats synchronisés depuis le cloud');
-      } else if (cloudEclats < save.meta) {
-        // Le local a plus d'eclats (jeu hors-ligne) : on re-synchronise le cloud
-        saveEclatsToCloud(save.meta);
-      }
-    } catch (e) {
-      console.warn('Synchro éclats au demarrage impossible :', e);
-    }
-  }
-
-  const PSEUDO_REGEX = /^[a-zA-Z0-9_-]{3,18}$/;
-
-  function isPseudoLocked() {
-    return localStorage.getItem('serpentMutant_pseudoLocked') === '1';
-  }
-  function lockPseudo(pseudo) {
-    localStorage.setItem('serpentMutant_pseudo', pseudo);
-    localStorage.setItem('serpentMutant_pseudoLocked', '1');
-  }
-
-  async function checkPseudoAvailable(pseudo) {
-    if (!cloudEnabled()) return { available: true };
-    if (!PSEUDO_REGEX.test(pseudo)) return { available: false, error: 'invalid_format' };
-    try {
-      const res = await fetch(WEBAPP_URL + '?action=checkPseudo&pseudo=' + encodeURIComponent(pseudo));
-      return await res.json();
-    } catch (err) {
-      return { available: true };
-    }
-  }
-
-  async function fetchGlobalTopScores() {
-    if (!cloudEnabled()) return [];
-    try {
-      const res  = await fetch(WEBAPP_URL + '?action=getTopScores');
-      const data = await res.json();
-      if (data && data.error) {
-        setCloudStatus('⚠️ Classement global : ' + data.error, true);
-        return [];
-      }
-      return Array.isArray(data) ? data : [];
-    } catch (err) {
-      console.warn('Impossible de récupérer le classement global :', err);
-      setCloudStatus('⚠️ Classement global inaccessible', true);
-      return [];
-    }
-  }
-
-  function addTopScore(score, room) {
-    save.topScores.push({ score, room, date: Date.now() });
-    save.topScores.sort((a, b) => b.score - a.score);
-    save.topScores = save.topScores.slice(0, 5);
-  }
-
-  // ============================================================
-  // Shop catalog
-  // ============================================================
-  const SHOP_COLORS = [
-    { id: 'teal',    name: 'Turquoise',   price: 0,   head: '#0fbfae', body: '#0a9d90' },
-    { id: 'pink',    name: 'Rose',        price: 50,  head: '#ff6b9d', body: '#d94f7f' },
-    { id: 'gold',    name: 'Or',          price: 80,  head: '#ffd93d', body: '#d9af1f' },
-    { id: 'purple',  name: 'Violet',      price: 120, head: '#a06bff', body: '#7c4fd9' },
-    { id: 'green',   name: 'Vert forêt',  price: 150, head: '#6bcb77', body: '#4a9d55' },
-    { id: 'blue',    name: 'Bleu roi',    price: 200, head: '#4a90ff', body: '#2f6fd9' },
-    { id: 'orange',  name: 'Orange',      price: 250, head: '#ff9d4a', body: '#d97a2f' },
-    { id: 'red',     name: 'Rouge',       price: 300, head: '#ff4a5c', body: '#d92f3f' },
-    { id: 'rainbow', name: 'Arc-en-ciel', price: 400, head: '#ff6b9d', body: '#a06bff', rainbow: true }
-  ];
-
-  const SHOP_FOODS = [
-    { id: 'classic', name: 'Classique', price: 0,   emoji: '🔴', color: '#ff6b9d' },
-    { id: 'apple',   name: 'Pomme',     price: 40,  emoji: '🍎', color: '#ff4a4a' },
-    { id: 'cherry',  name: 'Cerise',    price: 60,  emoji: '🍒', color: '#d92f4f' },
-    { id: 'grape',   name: 'Raisin',    price: 90,  emoji: '🍇', color: '#a06bff' },
-    { id: 'orange',  name: 'Orange',    price: 130, emoji: '🍊', color: '#ff9d4a' },
-    { id: 'star',    name: 'Étoile',    price: 170, emoji: '⭐', color: '#ffd93d' },
-    { id: 'gem',     name: 'Gemme',     price: 220, emoji: '💎', color: '#4ae0ff' },
-    { id: 'donut',   name: 'Donut',     price: 280, emoji: '🍩', color: '#e08a4a' },
-    { id: 'sushi',   name: 'Sushi',     price: 350, emoji: '🍣', color: '#f5f5f5' }
-  ];
-
-  const SHOP_BACKGROUNDS = [
-    { id: 'default', name: 'Nuit',               price: 0,   bg: '#10101c', grid: 'rgba(255,255,255,0.03)' },
-    { id: 'ocean',   name: 'Océan',              price: 60,  bg: '#0a1e2e', grid: 'rgba(80,180,255,0.06)'  },
-    { id: 'forest',  name: 'Forêt',              price: 110, bg: '#0e1f14', grid: 'rgba(107,203,119,0.07)' },
-    { id: 'sunset',  name: 'Coucher de soleil',  price: 180, bg: '#2e1420', grid: 'rgba(255,107,157,0.06)' },
-    { id: 'void',    name: 'Vide stellaire',      price: 260, bg: '#050510', grid: 'rgba(160,107,255,0.08)' }
-  ];
-
-  function shopCatalog(tab) {
-    if (tab === 'colors') return SHOP_COLORS;
-    if (tab === 'foods')  return SHOP_FOODS;
-    return SHOP_BACKGROUNDS;
-  }
-  function unlockedKey(tab) {
-    return tab === 'colors' ? 'colors' : tab === 'foods' ? 'foods' : 'backgrounds';
-  }
-  function equippedKey(tab) {
-    return tab === 'colors' ? 'color' : tab === 'foods' ? 'food' : 'background';
-  }
-
-  let _equippedColorCache = null, _equippedColorId = null;
-  let _equippedFoodCache  = null, _equippedFoodId  = null;
-  let _equippedBgCache    = null, _equippedBgId    = null;
-
-  function getEquippedColor() {
-    if (_equippedColorCache && _equippedColorId === save.equipped.color) return _equippedColorCache;
-    _equippedColorId    = save.equipped.color;
-    _equippedColorCache = SHOP_COLORS.find(c => c.id === save.equipped.color) || SHOP_COLORS[0];
-    return _equippedColorCache;
-  }
-  function getEquippedFood() {
-    if (_equippedFoodCache && _equippedFoodId === save.equipped.food) return _equippedFoodCache;
-    _equippedFoodId    = save.equipped.food;
-    _equippedFoodCache = SHOP_FOODS.find(f => f.id === save.equipped.food) || SHOP_FOODS[0];
-    return _equippedFoodCache;
-  }
-  function getEquippedBackground() {
-    if (_equippedBgCache && _equippedBgId === save.equipped.background) return _equippedBgCache;
-    _equippedBgId    = save.equipped.background;
-    _equippedBgCache = SHOP_BACKGROUNDS.find(b => b.id === save.equipped.background) || SHOP_BACKGROUNDS[0];
-    return _equippedBgCache;
-  }
-
-  // ============================================================
-  // Canvas setup
-  // ============================================================
-  const canvas = document.getElementById('game');
-  const ctx    = canvas.getContext('2d');
-  const GRID   = 20;
-  let CELL     = canvas.width / GRID;
-
-  function resizeCanvas() {
-    const maxW  = Math.min(560, window.innerWidth - 40);
-    canvas.width  = maxW;
-    canvas.height = maxW;
-    CELL = canvas.width / GRID;
-    const gw = document.getElementById('gameWrap');
-    const tc = document.getElementById('touchControls');
-    if (gw && tc && !gw.classList.contains('hidden')) {
-      tc.style.display = window.innerWidth <= 640 ? 'grid' : 'none';
-    }
-  }
-
-  let resizeDebounceTimer = null;
-  window.addEventListener('resize', () => {
-    clearTimeout(resizeDebounceTimer);
-    resizeDebounceTimer = setTimeout(resizeCanvas, 100);
-  });
-  resizeCanvas();
-
-  // ============================================================
-  // DOM refs
-  // ============================================================
-  const scoreVal       = document.getElementById('scoreVal');
-  const roomVal        = document.getElementById('roomVal');
-  const bestVal        = document.getElementById('bestVal');
-  const metaVal        = document.getElementById('metaVal');
-  const mutBar         = document.getElementById('mutBar');
-  const hud            = document.getElementById('hud');
-  const gameWrap       = document.getElementById('gameWrap');
-  const btnMenuFromGame = document.getElementById('btnMenuFromGame');
-  const btnMuteGameEl  = document.getElementById('btnMuteGame');
-  const touchControls  = document.getElementById('touchControls');
-
-  const menuOverlay      = document.getElementById('menuOverlay');
-  const difficultyOverlay = document.getElementById('difficultyOverlay');
-  const shopOverlay      = document.getElementById('shopOverlay');
-  const scoresOverlay    = document.getElementById('scoresOverlay');
-  const overlayMut       = document.getElementById('mutOverlay');
-  const overlayOver      = document.getElementById('overOverlay');
-  const feedbackOverlay  = document.getElementById('feedbackOverlay');
-  const settingsOverlay  = document.getElementById('settingsOverlay');
-  const mutationsOverlay = document.getElementById('mutationsOverlay');
-  // M-01 : overlay de pause
-  const pauseOverlay     = document.getElementById('pauseOverlay');
-
-  // Bug #43 : Accès defensif sur shopMetaVal
-  function refreshTopHud() {
-    if (bestVal) bestVal.textContent = save.best;
-    if (metaVal) metaVal.textContent = save.meta;
-    const statBest = document.getElementById('statBest');
-    if (statBest) statBest.textContent = save.best;
-    const statMeta = document.getElementById('statMeta');
-    if (statMeta) statMeta.textContent = save.meta;
-    const shopMetaVal = document.getElementById('shopMetaVal');
-    if (shopMetaVal) shopMetaVal.textContent = save.meta;
-  }
-  refreshTopHud();
-
-  // ============================================================
-  // Screen management
-  // ============================================================
-  function showScreen(name) {
-    // M-01 : toujours fermer la pause en changeant d'ecran
-    if (pauseOverlay) pauseOverlay.classList.add('hidden');
-
-    menuOverlay.classList.add('hidden');
-    shopOverlay.classList.add('hidden');
-    scoresOverlay.classList.add('hidden');
-    difficultyOverlay.classList.add('hidden');
-    overlayMut.classList.add('hidden');
-    overlayOver.classList.add('hidden');
-    feedbackOverlay.classList.add('hidden');
-    settingsOverlay.classList.add('hidden');
-    mutationsOverlay.classList.add('hidden');
-    hud.classList.add('hidden');
-    gameWrap.classList.add('hidden');
-    btnMenuFromGame.classList.add('hidden');
-    btnMuteGameEl.classList.add('hidden');
-    touchControls.style.display = 'none';
-
-    if (name === 'menu') {
-      refreshTopHud();
-      refreshPseudoLockUI();
-      updateCloudStatusIdle();
-      menuOverlay.classList.remove('hidden');
-    } else if (name === 'difficulty') {
-      renderDifficultyScreen();
-      difficultyOverlay.classList.remove('hidden');
-    } else if (name === 'shop') {
-      refreshTopHud();
-      renderShop();
-      shopOverlay.classList.remove('hidden');
-    } else if (name === 'scores') {
-      scoresOverlay.classList.remove('hidden');
-      renderScores();
-    } else if (name === 'feedback') {
-      openFeedbackScreen();
-      feedbackOverlay.classList.remove('hidden');
-    } else if (name === 'settings') {
-      renderSettingsScreen();
-      settingsOverlay.classList.remove('hidden');
-    } else if (name === 'mutations') {
-      renderMutationsScreen();
-      mutationsOverlay.classList.remove('hidden');
-    } else if (name === 'game') {
-      hud.classList.remove('hidden');
-      gameWrap.classList.remove('hidden');
-      btnMenuFromGame.classList.remove('hidden');
-      btnMuteGameEl.classList.remove('hidden');
-      if (window.innerWidth <= 640) touchControls.style.display = 'grid';
-    }
-  }
-
-  // ============================================================
-  // Shop rendering
-  // ============================================================
-  let currentShopTab = 'colors';
-
-  document.querySelectorAll('[data-tab]').forEach(tabEl => {
-    tabEl.addEventListener('click', () => {
-      currentShopTab = tabEl.dataset.tab;
-      document.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
-      tabEl.classList.add('active');
-      renderShop();
-    });
-  });
-
-  function renderShop() {
-    const grid = document.getElementById('shopGrid');
-    if (!grid) return;
-    grid.innerHTML = '';
-    const catalog = shopCatalog(currentShopTab);
-    const uKey    = unlockedKey(currentShopTab);
-    const eKey    = equippedKey(currentShopTab);
-
-    catalog.forEach(item => {
-      const isUnlocked = save.unlocked[uKey].includes(item.id) || item.price === 0;
-      const isEquipped = save.equipped[eKey] === item.id;
-      const canAfford  = save.meta >= item.price;
-
-      const cell = document.createElement('div');
-      cell.className = 'shopItem' + (isEquipped ? ' equipped' : '') + (!isUnlocked && !canAfford ? ' locked' : '');
-
-      let swatchContent = '';
-      let swatchStyle   = '';
-      if (currentShopTab === 'colors') {
-        swatchStyle = item.rainbow
-          ? `background: linear-gradient(135deg, #ff6b9d, #ffd93d, #6bcb77, #4a90ff, #a06bff);`
-          : `background: ${item.head};`;
-      } else if (currentShopTab === 'foods') {
-        swatchContent = item.emoji;
-        swatchStyle   = `background: rgba(255,255,255,0.08);`;
-      } else {
-        swatchStyle = `background: ${item.bg}; border: 1px solid rgba(255,255,255,0.15);`;
-      }
-
-      cell.innerHTML = `
-        <div class="swatch" style="${swatchStyle}">${swatchContent}</div>
-        <div class="iName">${item.name}</div>
-        ${isEquipped
-          ? '<div class="iEquipped">✓ Équipé</div>'
-          : isUnlocked
-            ? '<div class="iPrice">Débloqué</div>'
-            : `<div class="iPrice">${canAfford ? '' : '🔒 '}${item.price} 🧬</div>`
-        }
-      `;
-
-      cell.addEventListener('click', () => {
-        if (isUnlocked) {
-          save.equipped[eKey] = item.id;
-          writeSave(save);
-          renderShop();
-        } else if (canAfford) {
-          save.meta -= item.price;
-          save.unlocked[uKey].push(item.id);
-          save.equipped[eKey] = item.id;
-          writeSave(save);
-          saveEclatsToCloud(save.meta);
-          refreshTopHud();
-          renderShop();
-        }
-      });
-
-      grid.appendChild(cell);
-    });
-  }
-
-  // ============================================================
-  // Difficulty select rendering
-  // ============================================================
-  function renderDifficultyScreen() {
-    document.querySelectorAll('.diffBtn').forEach(btn => {
-      const isSelected = btn.dataset.diff === selectedDifficulty;
-      btn.style.outline    = isSelected ? '2px solid var(--accent)' : 'none';
-      btn.style.background = isSelected ? 'rgba(15,191,174,0.15)' : '';
-    });
-  }
-
-  // ============================================================
-  // Scores rendering
-  // ============================================================
-  function renderScores() {
-    const list = document.getElementById('scoresList');
-    if (!list) return;
-    list.innerHTML = '';
-    const scores = (save.topScores || [])
-      .slice()
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-    if (scores.length === 0) {
-      list.innerHTML = `<div class="emptyScores">Aucun score enregistré pour l'instant. Lance un run !</div>`;
-    } else {
-      scores.forEach((s, i) => {
-        const row   = document.createElement('div');
-        row.className = 'scoreRow';
-        const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i] || (i + 1);
-        row.innerHTML = `
-          <div class="rank">${medal}</div>
-          <div class="details">
-            <div class="sc">${s.score} pts</div>
-            <div class="rm">Salle ${s.room}</div>
-          </div>
-        `;
-        list.appendChild(row);
-      });
-    }
-    renderGlobalScores();
-  }
-
-  async function renderGlobalScores() {
-    const section = document.getElementById('globalScoresSection');
-    const list    = document.getElementById('globalScoresList');
-    if (!section || !list) return;
-    if (!cloudEnabled()) { section.classList.add('hidden'); return; }
-    section.classList.remove('hidden');
-    list.innerHTML = '<div class="emptyScores">Chargement…</div>';
-    try {
-      const globalScores = await fetchGlobalTopScores();
-      if (!globalScores || globalScores.length === 0) {
-        list.innerHTML = `<div class="emptyScores">Aucun score global pour l'instant.</div>`;
-        return;
-      }
-      list.innerHTML = '';
-      globalScores.slice(0, 10).forEach((s, i) => {
-        const row     = document.createElement('div');
-        row.className = 'scoreRow';
-        const rank    = document.createElement('div');
-        rank.className    = 'rank';
-        rank.textContent  = String(i + 1);
-        const details     = document.createElement('div');
-        details.className = 'details';
-        const sc = document.createElement('div');
-        sc.className   = 'sc';
-        sc.textContent = `${s.pseudo || 'Anonyme'} — ${s.score} pts`;
-        const rm = document.createElement('div');
-        rm.className   = 'rm';
-        rm.textContent = `Salle ${s.room} · ${s.difficulty || 'normal'}`;
-        details.appendChild(sc);
-        details.appendChild(rm);
-        row.appendChild(rank);
-        row.appendChild(details);
-        list.appendChild(row);
-      });
-    } catch (err) {
-      console.warn('Rendu du classement global impossible :', err);
-      list.innerHTML = `<div class="emptyScores">Classement global indisponible.</div>`;
-    }
-  }
-
-  // ============================================================
-  // Settings rendering
-  // ============================================================
-  const BINDING_LABELS = { up: '⬆ Haut', down: '⬇ Bas', left: '⬅ Gauche', right: '➡ Droite' };
-
-  // Bug #46 : Affichage en majuscule des touches a lettre unique
-  function displayKey(key) {
-    if (!key) return '—';
-    const names = { ' ': 'Espace', 'Enter': 'Entrée', 'Backspace': '⌫', 'Delete': 'Suppr', 'Control': 'Ctrl', 'Shift': 'Shift', 'Alt': 'Alt' };
-    if (names[key]) return names[key];
-    return key.length === 1 ? key.toUpperCase() : key;
-  }
-
-  // Bug #42 : Re-initialisation propre de l'affichage lors du changement de capture
-  function renderSettingsScreen() {
-    capturingDir = null;
-    const list = document.getElementById('bindingsList');
-    if (!list) return;
-    list.innerHTML = '';
-    for (const d of ['up', 'down', 'left', 'right']) {
-      const row        = document.createElement('div');
-      row.className    = 'bindingRow';
-      const label      = document.createElement('span');
-      label.textContent = BINDING_LABELS[d];
-      const keyDisplay       = document.createElement('span');
-      keyDisplay.className   = 'bindingKey';
-      keyDisplay.id          = 'bindingKey_' + d;
-      keyDisplay.textContent = displayKey(keyBindings[d]);
-      const btn = document.createElement('button');
-      btn.className = 'secondary hud-btn';
-      btn.id        = 'bindingBtn_' + d;
-      btn.style.cssText = 'padding:6px 14px; font-size:0.8rem;';
-      btn.textContent   = 'Changer';
-      btn.addEventListener('click', () => {
-        renderSettingsScreen();
-        capturingDir          = d;
-        btn.textContent       = '…';
-        keyDisplay.textContent = '?';
-      });
-      row.appendChild(label);
-      row.appendChild(keyDisplay);
-      row.appendChild(btn);
-      list.appendChild(row);
-    }
-  }
 
   const DIFFICULTIES = {
-    easy:   { label: '🟢 Facile',    speedMult: 1, scoreMult: 1, tickMs: 150 },
-    normal: { label: '🟡 Normal',    speedMult: 2, scoreMult: 2, tickMs: 100 },
-    hard:   { label: '🔴 Difficile', speedMult: 3, scoreMult: 3, tickMs: 70  }
+    easy:    { label: 'Facile',    tickMs: 160, scoreMult: 0.8, obstacles: 0 },
+    normal:  { label: 'Normal',    tickMs: 120, scoreMult: 1.0, obstacles: 3 },
+    hard:    { label: 'Difficile', tickMs: 90,  scoreMult: 1.5, obstacles: 6 },
+    extreme: { label: 'Extrême',   tickMs: 65,  scoreMult: 2.5, obstacles: 10 },
   };
-  let selectedDifficulty = 'normal';
 
-  // ============================================================
-  // Game state
-  // ============================================================
-  let snake = [], dir = {x:1,y:0}, nextDir = {x:1,y:0}, food = [], obstacles = [], score = 0, room = 1, alive = false;
-  let isTicking         = false;
-  let tickAccumulator   = 0;
-  let lastFrameTime     = null;
-  let waitingForFirstInput = true;
-  let activeMutations   = [];
-  let shieldCharges     = 0;
-  let particles         = [];
-  let doubleFoodActive  = false;
-
-  // M-01 : etat de pause
-  let paused = false;
-  // M-03 : compteur dedie pour la recharge du bouclier
-  let fruitsEatenSinceShield = 0;
-  // M-05 : contexte sauvegarde a la mort pour le formulaire de feedback
-  let lastRunContext = { room: 1, specialRoom: null };
-  // C-02 : horodatage du debut du run pour le calcul du temps ecoule
-  let runStartTime = 0;
-
-  const MUTATION_POOL = [
-    { id: 'speed', title: '⚡ Accélération', desc: 'Le serpent se déplace 15% plus vite en permanence.',
-      apply: () => { baseTickMs = Math.max(60, baseTickMs * 0.85); } },
-    // M-03 : apply() remet fruitsEatenSinceShield a zero pour un comptage propre
-    { id: 'shield', title: '🛡️ Bouclier', desc: 'Survis à 1 collision fatale (rechargeable en mangeant 5 fruits).',
-      apply: () => { shieldCharges += 1; fruitsEatenSinceShield = 0; } },
-    { id: 'phase', title: '👻 Traversée', desc: 'Traverse les bords de l\'arène (téléportation) au lieu de mourir.',
-      apply: () => { wallsWrap = true; } },
-    { id: 'doublefood', title: '🍎🍎 Double Fruit', desc: 'Deux fruits apparaissent en permanence sur le plateau.',
-      apply: () => { doubleFoodActive = true; } },
-    { id: 'shrink', title: '✂️ Régime', desc: 'Le serpent perd 2 segments à chaque fruit mangé — plus facile à manœuvrer.',
-      apply: () => { shrinkMode = true; } },
-    { id: 'magnet', title: '🧲 Aimant', desc: 'Les fruits proches sont légèrement attirés vers la tête du serpent.',
-      apply: () => { magnetActive = true; } },
-    { id: 'scorex2', title: '💰 Cupidité', desc: 'Chaque fruit rapporte le double de points.',
-      apply: () => { scoreMultiplier *= 2; } },
-    { id: 'slowobstacles', title: '🧊 Gel', desc: 'Les nouveaux obstacles apparaissent moins fréquemment.',
-      apply: () => { obstacleDensity = Math.max(0.02, obstacleDensity * 0.6); } }
+  const MUTATIONS = [
+    { id: 'speed',    title: '⚡ Vélocité',     desc: 'Vitesse de déplacement +20%' },
+    { id: 'magnet',   title: '🧲 Magnétisme',   desc: 'La nourriture est attirée vers toi (rayon 3)' },
+    { id: 'ghost',    title: '👻 Spectre',      desc: 'Tu peux traverser ton propre corps' },
+    { id: 'double',   title: '✨ Double Score', desc: 'Chaque fruit rapporte le double de points' },
+    { id: 'shrink',   title: '🔻 Réduction',    desc: 'Tu perds 2 segments en mangeant (min 3)' },
+    { id: 'shield',   title: '🛡️ Bouclier',    desc: 'Gagne 1 charge (max 3) tous les 5 fruits' },
+    { id: 'golden',   title: '🥇 Midas',        desc: 'Des fruits dorés (×5 points) apparaissent' },
+    { id: 'teleport', title: '🌀 Téléport',     desc: 'Traverser un bord = apparaître au bord opposé' },
+    { id: 'slow',     title: '🐌 Ralenti',      desc: 'Vitesse −15% (utile pour contrôler)' },
+    { id: 'tiny',     title: '🔬 Miniature',    desc: 'Le serpent est plus fin visuellement' },
   ];
 
-  let baseTickMs        = 150;
-  let difficultyScoreMult = 1;
-  let wallsWrap         = false;
-  let shrinkMode        = false;
-  let magnetActive      = false;
-  let scoreMultiplier   = 1;
-  let obstacleDensity   = 0.05;
-  let fruitsEatenThisRun = 0;
-
-  // ============================================================
-  // Special rooms (miroir / glace / volcan)
-  // ============================================================
-  const SPECIAL_ROOM_START  = 3;
-  const SPECIAL_ROOM_CHANCE = 0.25;
-  const SPECIAL_ROOM_TYPES  = ['mirror', 'ice', 'volcano'];
-
-  let currentSpecialRoom  = null;
-  let iceCells            = [];
-  let iceCellSet          = new Set();
-  let slideQueue          = 0;
-  let lavaCells           = [];
-  let lavaCellMap         = new Map();
-  let lavaCyclePositions  = [];
-  let lavaCycleNextAt     = null;
-  function cellKey_(x, y) { return x + ',' + y; }
-  const LAVA_CYCLE_MS   = 2500;
-  const LAVA_WARNING_MS = 900;
-
-  function rollSpecialRoom() {
-    if (room < SPECIAL_ROOM_START) return null;
-    if (Math.random() >= SPECIAL_ROOM_CHANCE) return null;
-    return SPECIAL_ROOM_TYPES[Math.floor(Math.random() * SPECIAL_ROOM_TYPES.length)];
-  }
-
-  function clearSpecialRoomEffects() {
-    lavaCycleNextAt    = null;
-    iceCells           = [];
-    iceCellSet         = new Set();
-    lavaCells          = [];
-    lavaCellMap        = new Map();
-    lavaCyclePositions = [];
-    slideQueue         = 0;
-  }
-
-  let lastRoomWasSpecial = false;
-
-  function setupSpecialRoom(type) {
-    const wasSpecial = lastRoomWasSpecial;
-    clearSpecialRoomEffects();
-    currentSpecialRoom = type;
-    lastRoomWasSpecial = !!type;
-    if (type === 'ice') {
-      generateIceCells();
-      playMusic('ice');
-    } else if (type === 'volcano') {
-      generateLavaCyclePositions();
-      cycleLavaZones();
-      lavaCycleNextAt = performance.now() + LAVA_CYCLE_MS;
-      playMusic('volcano');
-    } else if (type === 'mirror') {
-      playMusic('classic', { reversed: true });
-    } else if (wasSpecial) {
-      playMusic('classic');
-    }
-  }
-
-  function generateIceCells() {
-    iceCells   = [];
-    iceCellSet = new Set();
-    const count = Math.floor(GRID * GRID * 0.06);
-    let tries   = 0;
-    const headX = snake && snake[0] ? snake[0].x : 10;
-    const headY = snake && snake[0] ? snake[0].y : 10;
-    while (iceCells.length < count && tries < 400) {
-      tries++;
-      const x = Math.floor(Math.random() * GRID);
-      const y = Math.floor(Math.random() * GRID);
-      if (Math.abs(x - headX) < 4 && Math.abs(y - headY) < 4) continue;
-      if (!cellFree(x, y)) continue;
-      const key = cellKey_(x, y);
-      if (iceCellSet.has(key)) continue;
-      iceCells.push({ x, y });
-      iceCellSet.add(key);
-    }
-  }
-
-  function generateLavaCyclePositions() {
-    lavaCyclePositions = [];
-    const poolSize     = Math.floor(GRID * GRID * 0.18);
-    let tries          = 0;
-    while (lavaCyclePositions.length < poolSize && tries < 900) {
-      tries++;
-      const x = Math.floor(Math.random() * GRID);
-      const y = Math.floor(Math.random() * GRID);
-      if (lavaCyclePositions.some(c => c.x === x && c.y === y)) continue;
-      lavaCyclePositions.push({ x, y });
-    }
-  }
-
-  function cycleLavaZones() {
-    if (!alive || currentSpecialRoom !== 'volcano') return;
-    const headX       = snake && snake[0] ? snake[0].x : 10;
-    const headY       = snake && snake[0] ? snake[0].y : 10;
-    const activeCount = Math.floor(GRID * GRID * 0.05);
-    const candidates  = lavaCyclePositions.filter(c =>
-      !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
-      !obstacles.some(o => o.x === c.x && o.y === c.y) &&
-      !food.some(f => f.x === c.x && f.y === c.y)
-    );
-    const shuffled  = [...candidates].sort(() => Math.random() - 0.5);
-    const nextActive = shuffled.slice(0, activeCount);
-    lavaCells   = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
-    lavaCellMap = new Map(lavaCells.map(c => [cellKey_(c.x, c.y), c.armedAt]));
-  }
-
-  function isLavaActive(x, y) {
-    const armedAt = lavaCellMap.get(cellKey_(x, y));
-    return armedAt !== undefined && Date.now() >= armedAt;
-  }
-
-  function isIceCell(x, y) {
-    return iceCellSet.has(cellKey_(x, y));
-  }
-
-  function resetRunState() {
-    snake = [
-      { x: 10, y: 10 },
-      { x: 9,  y: 10 },
-      { x: 8,  y: 10 }
-    ];
-    dir                  = { x: 1, y: 0 };
-    nextDir              = { x: 1, y: 0 };
-    obstacles            = [];
-    score                = 0;
-    room                 = 1;
-    alive                = true;
-    activeMutations      = [];
-    shieldCharges        = 0;
-    const diff           = DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal;
-    baseTickMs           = diff.tickMs;
-    difficultyScoreMult  = diff.scoreMult;
-    wallsWrap            = false;
-    shrinkMode           = false;
-    magnetActive         = false;
-    scoreMultiplier      = 1;
-    obstacleDensity      = 0.05;
-    fruitsEatenThisRun   = 0;
-    doubleFoodActive     = false;
-    particles            = [];
-    food                 = [];
-    waitingForFirstInput = true;
-    currentSpecialRoom   = null;
-    lastRoomWasSpecial   = false;
-    // Nouveaux champs
-    fruitsEatenSinceShield = 0;     // M-03
-    paused               = false;   // M-01
-    runStartTime         = Date.now(); // C-02
-    lastRunContext        = { room: 1, specialRoom: null }; // M-05
-    playMusic('classic');
-    clearSpecialRoomEffects();
-    generateObstaclesForRoom();
-    spawnFood();
-    updateHud();
-    if (mutBar) mutBar.innerHTML = '';
-  }
-
-  function cellFree(x, y) {
-    if (x < 0 || y < 0 || x >= GRID || y >= GRID) return false;
-    for (const s of snake) if (s.x === x && s.y === y) return false;
-    for (const o of obstacles) if (o.x === x && o.y === y) return false;
-    for (const f of food)  if (f.x === x && f.y === y) return false;
-    if (currentSpecialRoom === 'ice'     && isIceCell(x, y))               return false;
-    if (currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(x, y))) return false;
-    return true;
-  }
-
-  function generateObstaclesForRoom() {
-    obstacles = [];
-    const roomFactor = room === 1 ? 0.5 : Math.min(1 + room * 0.15, 2.2);
-    const count      = Math.floor(GRID * GRID * obstacleDensity * roomFactor);
-    let tries        = 0;
-    const headX      = snake && snake[0] ? snake[0].x : 10;
-    const headY      = snake && snake[0] ? snake[0].y : 10;
-    while (obstacles.length < count && tries < 800) {
-      tries++;
-      const x = Math.floor(Math.random() * GRID);
-      const y = Math.floor(Math.random() * GRID);
-      if (Math.abs(x - headX) < 5 && Math.abs(y - headY) < 5) continue;
-      let tooCloseToBody = false;
-      for (const s of snake) {
-        if (Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1) { tooCloseToBody = true; break; }
-      }
-      if (tooCloseToBody) continue;
-      if (dir) {
-        if (dir.x !== 0 && y === headY && Math.sign(x - headX) === Math.sign(dir.x)) continue;
-        if (dir.y !== 0 && x === headX && Math.sign(y - headY) === Math.sign(dir.y)) continue;
-      }
-      if (cellFree(x, y)) obstacles.push({ x, y });
-    }
-  }
-
-  function spawnFood() {
-    const wanted = doubleFoodActive ? 2 : 1;
-    const headX  = snake && snake[0] ? snake[0].x : 10;
-    const headY  = snake && snake[0] ? snake[0].y : 10;
-    while (food.length < wanted) {
-      let tries = 0, x, y;
-      let placed = false;
-      while (tries < 150) {
-        const radius = 6 + Math.floor(tries / 20);
-        x = Math.max(0, Math.min(GRID - 1, headX + Math.floor(Math.random() * (radius * 2 + 1)) - radius));
-        y = Math.max(0, Math.min(GRID - 1, headY + Math.floor(Math.random() * (radius * 2 + 1)) - radius));
-        tries++;
-        if (cellFree(x, y)) { placed = true; break; }
-      }
-      if (!placed) {
-        tries = 0;
-        do {
-          x = Math.floor(Math.random() * GRID);
-          y = Math.floor(Math.random() * GRID);
-          tries++;
-        } while (!cellFree(x, y) && tries < 300);
-      }
-      food.push({ x, y, kind: Math.random() < 0.15 ? 'gold' : 'normal' });
-    }
-  }
-
-  function updateHud() {
-    if (scoreVal) scoreVal.textContent = score;
-    if (roomVal)  roomVal.textContent  = room;
-    if (bestVal)  bestVal.textContent  = Math.max(save.best, score);
-    const diffLabel = document.getElementById('diffVal');
-    if (diffLabel) diffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
-
-    const specialBlock = document.getElementById('specialRoomHudBlock');
-    const specialVal   = document.getElementById('specialRoomVal');
-    if (specialBlock && specialVal) {
-      if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
-        specialVal.textContent = SPECIAL_ROOM_INFO[currentSpecialRoom].emoji + ' ' + SPECIAL_ROOM_INFO[currentSpecialRoom].label;
-        specialBlock.classList.remove('hidden');
-      } else {
-        specialBlock.classList.add('hidden');
-      }
-    }
-  }
-
-  function addParticles(x, y, color) {
-    for (let i = 0; i < 8; i++) {
-      particles.push({
-        x: x * CELL + CELL / 2,
-        y: y * CELL + CELL / 2,
-        vx: (Math.random() - 0.5) * 3,
-        vy: (Math.random() - 0.5) * 3,
-        life: 20,
-        color
-      });
-    }
-  }
-
-  // ============================================================
-  // Input
-  // ============================================================
-  const DIRS = {
-    up:    { x: 0,  y: -1 },
-    down:  { x: 0,  y: 1  },
-    left:  { x: -1, y: 0  },
-    right: { x: 1,  y: 0  }
+  const SPECIAL_ROOMS = {
+    mirror:  { emoji: '🪞', label: 'Salle Miroir',  desc: 'Touches inversées : gauche ↔ droite, haut ↔ bas' },
+    ice:     { emoji: '🧊', label: 'Salle Glace',   desc: 'Cases givrées : tu glisses sur 1-2 cases' },
+    volcano: { emoji: '🌋', label: 'Salle Volcan',  desc: 'Zones de lave cycliques. Contact = game over' },
   };
 
-  const MIRROR_MAP = { up: 'down', down: 'up', left: 'right', right: 'left' };
-
-  function setDir(d) {
-    if (!alive || paused) return;  // M-01 : bloquer les inputs en pause
-    const effectiveKey = currentSpecialRoom === 'mirror' ? MIRROR_MAP[d] : d;
-    const nd = DIRS[effectiveKey];
-    if (!nd) return;
-    if (nd.x === -dir.x && nd.y === -dir.y && snake.length > 1) return;
-    nextDir = nd;
-    waitingForFirstInput = false;
-  }
-
-  window.addEventListener('keydown', (e) => {
-    if (capturingDir) {
-      if (!settingsOverlay.classList.contains('hidden')) {
-        e.preventDefault();
-        if (!BINDING_BLOCKED.has(e.key)) {
-          for (const d of ['up','down','left','right']) {
-            if (d !== capturingDir && keyBindings[d] === e.key) keyBindings[d] = '';
-          }
-          keyBindings[capturingDir] = e.key;
-          saveBindings(keyBindings);
-        }
-        capturingDir = null;
-        renderSettingsScreen();
-        return;
-      }
-      capturingDir = null;
-    }
-
-    // M-01 : Echap bascule la pause quand on est en jeu
-    if (e.key === 'Escape' && gameWrap && !gameWrap.classList.contains('hidden')) {
-      e.preventDefault();
-      if (paused)            resumeGame();
-      else if (alive && isTicking) pauseGame();
-      return;
-    }
-
-    const ARROW_MAP = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
-    let d = ARROW_MAP[e.key];
-    if (!d) {
-      for (const [action, key] of Object.entries(keyBindings)) {
-        if (key && e.key === key) { d = action; break; }
-      }
-    }
-    if (d && alive) {
-      e.preventDefault();
-      setDir(d);
-    }
-  });
-
-  document.querySelectorAll('#touchControls .dpad').forEach(btn => {
-    btn.addEventListener('click', () => setDir(btn.dataset.dir));
-  });
-
-  let touchStart = null;
-  canvas.addEventListener('touchstart', (e) => {
-    const t = e.touches[0];
-    touchStart = { x: t.clientX, y: t.clientY };
-  }, { passive: true });
-
-  // Bug #47 : Seuil de deplacement minimum (15px) pour le swipe
-  canvas.addEventListener('touchend', (e) => {
-    if (!touchStart) return;
-    const t  = e.changedTouches[0];
-    const dx = t.clientX - touchStart.x;
-    const dy = t.clientY - touchStart.y;
-    const MIN_SWIPE = 15;
-    if (Math.abs(dx) > MIN_SWIPE || Math.abs(dy) > MIN_SWIPE) {
-      if (Math.abs(dx) > Math.abs(dy)) {
-        setDir(dx > 0 ? 'right' : 'left');
-      } else {
-        setDir(dy > 0 ? 'down' : 'up');
-      }
-    }
-    touchStart = null;
-  }, { passive: true });
-
-  // ============================================================
-  // Game loop
-  // ============================================================
-  function step() {
-    if (!alive || waitingForFirstInput) return;
-
-    if (slideQueue > 0) {
-      slideQueue--;
-    } else {
-      dir = nextDir;
-    }
-
-    let head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
-
-    if (wallsWrap) {
-      if (head.x < 0)     head.x = GRID - 1;
-      if (head.x >= GRID) head.x = 0;
-      if (head.y < 0)     head.y = GRID - 1;
-      if (head.y >= GRID) head.y = 0;
-    }
-
-    let dead = false;
-    if (!wallsWrap && (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID)) dead = true;
-    if (!dead) {
-      for (const o of obstacles) if (o.x === head.x && o.y === head.y) dead = true;
-    }
-    if (!dead) {
-      for (let i = 0; i < snake.length - 1; i++) {
-        if (snake[i].x === head.x && snake[i].y === head.y) dead = true;
-      }
-    }
-    if (!dead && currentSpecialRoom === 'volcano' && isLavaActive(head.x, head.y)) dead = true;
-
-    if (dead) {
-      if (shieldCharges > 0) {
-        shieldCharges--;
-        addParticles(head.x, head.y, '#ffd93d');
-        slideQueue = 0;
-        return;
-      }
-      endRun();
-      return;
-    }
-
-    snake.unshift(head);
-
-    if (currentSpecialRoom === 'ice' && isIceCell(head.x, head.y) && slideQueue === 0) {
-      slideQueue = 1 + Math.floor(Math.random() * 2);
-    }
-
-    if (magnetActive) {
-      for (const f of food) {
-        const d = Math.abs(f.x - head.x) + Math.abs(f.y - head.y);
-        if (d <= 4 && d > 0 && Math.random() < 0.3) {
-          const nx = f.x < head.x ? f.x + 1 : (f.x > head.x ? f.x - 1 : f.x);
-          const ny = f.y < head.y ? f.y + 1 : (f.y > head.y ? f.y - 1 : f.y);
-          if (nx !== f.x || ny !== f.y) {
-            let ok = true;
-            for (const s of snake) { if (s.x === nx && s.y === ny) { ok = false; break; } }
-            if (ok) for (const o of obstacles) { if (o.x === nx && o.y === ny) { ok = false; break; } }
-            if (ok) for (const g of food) { if (g !== f && g.x === nx && g.y === ny) { ok = false; break; } }
-            if (ok && currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(nx, ny))) ok = false;
-            // H-03 : empecher l'aimant d'attirer la nourriture sur une case de glace (inaccessible)
-            if (ok && currentSpecialRoom === 'ice' && isIceCell(nx, ny)) ok = false;
-            if (ok) { f.x = nx; f.y = ny; }
-          }
-        }
-      }
-    }
-
-    let ate = false;
-    for (let i = food.length - 1; i >= 0; i--) {
-      if (food[i].x === head.x && food[i].y === head.y) {
-        const gain = (food[i].kind === 'gold' ? 5 : 1) * scoreMultiplier * difficultyScoreMult;
-        score += gain;
-        addParticles(head.x, head.y, food[i].kind === 'gold' ? '#ffd93d' : getEquippedFood().color);
-        food.splice(i, 1);
-        ate = true;
-        fruitsEatenThisRun++;
-        if (shrinkMode) {
-          const MIN_LENGTH = 3;
-          if (snake.length > MIN_LENGTH + 2) { snake.pop(); snake.pop(); }
-          else if (snake.length > MIN_LENGTH) { snake.pop(); }
-        }
-      }
-    }
-
-    if (!ate) {
-      snake.pop();
-    }
-
-    if (ate) {
-      spawnFood();
-      // M-03 : compteur dedie independant de fruitsEatenThisRun
-      if (activeMutations.some(m => m.id === 'shield')) {
-        fruitsEatenSinceShield++;
-        if (fruitsEatenSinceShield % 5 === 0) {
-          shieldCharges = Math.min(shieldCharges + 1, 3);
-        }
-      }
-      if (fruitsEatenThisRun % 12 === 0) {
-        advanceRoom();
-        return;
-      }
-    }
-
-    updateHud();
-  }
-
-  function advanceRoom() {
-    lavaCycleNextAt    = null;
-    room++;
-    currentSpecialRoom = rollSpecialRoom();
-    updateHud();
-    showMutationChoice();
-  }
-
-  function pickRandomMutations(n) {
-    const notTaken = MUTATION_POOL.filter(m => !activeMutations.find(a => a.id === m.id));
-    if (notTaken.length >= n) {
-      return [...notTaken].sort(() => Math.random() - 0.5).slice(0, n);
-    }
-    const shuffledNotTaken = [...notTaken].sort(() => Math.random() - 0.5);
-    const takenPool        = MUTATION_POOL.filter(m => activeMutations.find(a => a.id === m.id));
-    const shuffledTaken    = [...takenPool].sort(() => Math.random() - 0.5);
-    return [...shuffledNotTaken, ...shuffledTaken].slice(0, n);
-  }
-
-  const SPECIAL_ROOM_INFO = {
-    mirror:  { emoji: '🪞', label: 'Salle Miroir',  desc: 'Les touches sont inversées : gauche ↔ droite, haut ↔ bas.' },
-    ice:     { emoji: '🧊', label: 'Salle Glace',   desc: 'Certaines cases sont givrées : tu glisses dessus sur 1-2 cases de plus.' },
-    volcano: { emoji: '🌋', label: 'Salle Volcan',  desc: 'Des zones de lave apparaissent et se déplacent. Rester dessus après l\'avertissement = game over.' }
+  const SHOP = {
+    colors: [
+      { id: 'teal',    name: 'Turquoise',   price: 0,   head: '#0fbfae', body: '#0a9d90' },
+      { id: 'pink',    name: 'Rose',        price: 50,  head: '#ff6b9d', body: '#d94f7f' },
+      { id: 'gold',    name: 'Or',          price: 80,  head: '#ffd93d', body: '#d9af1f' },
+      { id: 'purple',  name: 'Violet',      price: 120, head: '#a06bff', body: '#7c4fd9' },
+      { id: 'green',   name: 'Vert forêt',  price: 150, head: '#6bcb77', body: '#4a9d55' },
+      { id: 'blue',    name: 'Bleu roi',    price: 200, head: '#4a90ff', body: '#2f6fd9' },
+      { id: 'orange',  name: 'Orange',      price: 250, head: '#ff9d4a', body: '#d97a2f' },
+      { id: 'red',     name: 'Rouge',       price: 300, head: '#ff4a5c', body: '#d92f3f' },
+      { id: 'rainbow', name: 'Arc-en-ciel', price: 400, head: '#ff6b9d', body: '#a06bff', rainbow: true },
+    ],
+    foods: [
+      { id: 'classic', name: 'Classique', price: 0,   emoji: '🔴', color: '#ff6b9d' },
+      { id: 'apple',   name: 'Pomme',     price: 40,  emoji: '🍎', color: '#ff4a4a' },
+      { id: 'cherry',  name: 'Cerise',    price: 60,  emoji: '🍒', color: '#d92f4f' },
+      { id: 'grape',   name: 'Raisin',    price: 90,  emoji: '🍇', color: '#a06bff' },
+      { id: 'orange',  name: 'Orange',    price: 130, emoji: '🍊', color: '#ff9d4a' },
+      { id: 'star',    name: 'Étoile',    price: 170, emoji: '⭐', color: '#ffd93d' },
+      { id: 'gem',     name: 'Gemme',     price: 220, emoji: '💎', color: '#4ae0ff' },
+      { id: 'donut',   name: 'Donut',     price: 280, emoji: '🍩', color: '#e08a4a' },
+      { id: 'sushi',   name: 'Sushi',     price: 350, emoji: '🍣', color: '#f5f5f5' },
+    ],
+    backgrounds: [
+      { id: 'default', name: 'Nuit',           price: 0,   bg: '#10101c', grid: 'rgba(255,255,255,0.03)' },
+      { id: 'ocean',   name: 'Océan',          price: 60,  bg: '#0a1e2e', grid: 'rgba(80,180,255,0.06)' },
+      { id: 'forest',  name: 'Forêt',          price: 110, bg: '#0e1f14', grid: 'rgba(107,203,119,0.07)' },
+      { id: 'sunset',  name: 'Coucher soleil', price: 180, bg: '#2e1420', grid: 'rgba(255,107,157,0.06)' },
+      { id: 'void',    name: 'Vide stellaire', price: 260, bg: '#050510', grid: 'rgba(160,107,255,0.08)' },
+    ],
   };
 
-  function showMutationChoice() {
-    stopTicking();
-    const choices = pickRandomMutations(3);
-    choices.forEach(mut => {
-      if (!save.discoveredMutations.includes(mut.id)) {
-        save.discoveredMutations.push(mut.id);
-      }
-    });
-    writeSave(save);
-    const container = document.getElementById('mutChoices');
-    if (container) container.innerHTML = '';
+  // ============================================================
+  // UTILITAIRES
+  // ============================================================
 
-    const specialBanner = document.getElementById('specialRoomBanner');
-    if (specialBanner) {
-      if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
-        const info = SPECIAL_ROOM_INFO[currentSpecialRoom];
-        specialBanner.innerHTML = `<div class="specialRoomTitle">${info.emoji} ${info.label}</div><div class="specialRoomDesc">${info.desc}</div>`;
-        specialBanner.classList.remove('hidden');
-      } else {
-        specialBanner.classList.add('hidden');
+  // Hash SHA-256 pour le mot de passe (côté client)
+  async function hashPassword(password) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + '_serpent_salt_2024');
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Génère un ID de session unique
+  function generateSessionId() {
+    return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  }
+
+  // Stockage local sécurisé
+  const Storage = {
+    get(key, defaultVal = null) {
+      try {
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : defaultVal;
+      } catch {
+        return defaultVal;
       }
+    },
+    set(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (e) {
+        console.warn('Storage error:', e);
+      }
+    },
+    remove(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch {}
     }
-
-    choices.forEach(mut => {
-      const card       = document.createElement('div');
-      card.className   = 'mutCard';
-      card.innerHTML   = `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`;
-      card.addEventListener('click', () => {
-        mut.apply();
-        activeMutations.push(mut);
-        renderMutBar();
-        overlayMut.classList.add('hidden');
-        setupSpecialRoom(currentSpecialRoom);
-        generateObstaclesForRoom();
-        food = [];
-        spawnFood();
-        waitingForFirstInput = true;
-        updateHud();
-        startTicking();
-      });
-      if (container) container.appendChild(card);
-    });
-    overlayMut.classList.remove('hidden');
-  }
-
-  function renderMutBar() {
-    if (!mutBar) return;
-    mutBar.innerHTML = '';
-    activeMutations.forEach(m => {
-      const chip       = document.createElement('div');
-      chip.className   = 'mutChip';
-      chip.textContent = m.title;
-      mutBar.appendChild(chip);
-    });
-  }
-
-  function endRun() {
-    // M-05 : sauvegarder le contexte avant de modifier alive/room
-    lastRunContext = { room, specialRoom: currentSpecialRoom };
-
-    stopMusic();
-    alive = false;
-    // M-01 : fermer la pause si elle etait ouverte
-    paused = false;
-    if (pauseOverlay) pauseOverlay.classList.add('hidden');
-    stopTicking();
-    clearSpecialRoomEffects();
-
-    const metaGain  = Math.max(1, Math.floor(score / 10) + room);
-    save.meta      += metaGain;
-    const isRecord  = score > save.best;
-    if (isRecord) save.best = score;
-    addTopScore(score, room);
-    writeSave(save);
-    // C-02 : transmission du temps ecoule pour validation cote serveur
-    submitScoreToCloud(score, room, metaGain, selectedDifficulty, Date.now() - runStartTime);
-    saveEclatsToCloud(save.meta);
-
-    const overScore    = document.getElementById('overScore');
-    const overRoom     = document.getElementById('overRoom');
-    const overMeta     = document.getElementById('overMeta');
-    const overDiffLabel = document.getElementById('overDiffLabel');
-    const newRecordMsg = document.getElementById('newRecordMsg');
-
-    if (overScore)    overScore.textContent    = score;
-    if (overRoom)     overRoom.textContent     = room;
-    if (overMeta)     overMeta.textContent     = '+' + metaGain;
-    if (overDiffLabel) overDiffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
-    if (newRecordMsg) newRecordMsg.classList.toggle('hidden', !isRecord);
-    refreshTopHud();
-
-    overlayMut.classList.add('hidden');
-    overlayOver.classList.remove('hidden');
-  }
+  };
 
   // ============================================================
-  // Rendering
+  // ÉTAT GLOBAL
   // ============================================================
-  function draw() {
-    const bgTheme    = getEquippedBackground();
-    const colorTheme = getEquippedColor();
-    const foodTheme  = getEquippedFood();
-    const now        = Date.now();
 
-    canvas.style.background = bgTheme.bg;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const State = {
+    // Session utilisateur
+    session: null, // { username, sessionId, ... }
+    
+    // Données joueur (depuis le serveur)
+    player: null, // { username, eclats, bestScore, bestRoom, totalGames, unlocked, equipped, discoveredMutations }
+    
+    // État du jeu
+    game: {
+      snake: [],
+      dir: { x: 1, y: 0 },
+      nextDir: { x: 1, y: 0 },
+      food: [],
+      obstacles: [],
+      particles: [],
+      score: 0,
+      room: 1,
+      alive: false,
+      paused: false,
+      waitingForInput: true,
+      difficulty: 'normal',
+      
+      // Mutations actives
+      activeMutations: [],
+      speedMult: 1,
+      ghostMode: false,
+      shrinkMode: false,
+      scoreMultiplier: 1,
+      goldenEnabled: false,
+      magnetEnabled: false,
+      teleportEnabled: false,
+      shieldCharges: 0,
+      fruitsEaten: 0,
+      fruitsForShield: 0,
+      
+      // Salle spéciale
+      specialRoom: null,
+      iceCells: [],
+      lavaCells: [],
+      lavaCycleAt: null,
+      
+      // Timing
+      runStartTime: 0,
+      isTicking: false,
+      tickAccumulator: 0,
+      lastFrameTime: null,
+    },
+    
+    // Canvas
+    canvas: null,
+    ctx: null,
+    cellSize: 28,
+    
+    // UI
+    currentScreen: 'auth',
+    currentShopTab: 'colors',
+    authMode: 'login',
+  };
 
-    ctx.strokeStyle = bgTheme.grid;
-    ctx.lineWidth   = 1;
-    ctx.beginPath();
-    for (let i = 0; i <= GRID; i++) {
-      ctx.moveTo(i * CELL, 0);
-      ctx.lineTo(i * CELL, canvas.height);
-      ctx.moveTo(0, i * CELL);
-      ctx.lineTo(canvas.width, i * CELL);
-    }
-    ctx.stroke();
+  // ============================================================
+  // CLOUD API (Google Sheets)
+  // ============================================================
 
-    if (currentSpecialRoom === 'ice' && iceCells.length) {
-      ctx.fillStyle = 'rgba(140, 210, 255, 0.35)';
-      ctx.beginPath();
-      iceCells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(200, 235, 255, 0.6)';
-      ctx.lineWidth   = 1;
-      ctx.beginPath();
-      iceCells.forEach(c => ctx.rect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4));
-      ctx.stroke();
-    }
-    if (currentSpecialRoom === 'volcano' && lavaCells.length) {
-      const activeCells   = [];
-      const blinkOnCells  = [];
-      const blinkOffCells = [];
-      const blink = Math.floor(now / 150) % 2 === 0;
-      lavaCells.forEach(c => {
-        if (now >= c.armedAt) activeCells.push(c);
-        else (blink ? blinkOnCells : blinkOffCells).push(c);
-      });
-      const fillGroup = (cells, color) => {
-        if (!cells.length) return;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        cells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
-        ctx.fill();
-      };
-      fillGroup(activeCells,   '#ff4a2f');
-      fillGroup(blinkOnCells,  'rgba(255, 150, 60, 0.55)');
-      fillGroup(blinkOffCells, 'rgba(255, 90, 40, 0.3)');
-    }
-
-    if (obstacles.length) {
-      ctx.fillStyle = '#3a3a5c';
-      ctx.beginPath();
-      obstacles.forEach(o => addRoundRectPath(o.x * CELL + 2, o.y * CELL + 2, CELL - 4, CELL - 4, 4));
-      ctx.fill();
-    }
-
-    let foodFontSet = false;
-    food.forEach(f => {
-      const cx = f.x * CELL + CELL / 2;
-      const cy = f.y * CELL + CELL / 2;
-      if (f.kind === 'gold') {
-        ctx.fillStyle = '#ffd93d';
-        ctx.beginPath();
-        ctx.arc(cx, cy, CELL / 2.6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#fff8d6';
-        ctx.lineWidth   = 2;
-        ctx.stroke();
-      } else if (foodTheme.emoji) {
-        if (!foodFontSet) {
-          ctx.font         = `${Math.floor(CELL * 0.85)}px sans-serif`;
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          foodFontSet = true;
+  const Cloud = {
+    async request(action, data = {}) {
+      if (!CONFIG.WEBAPP_URL) {
+        return { ok: false, error: 'no_cloud' };
+      }
+      
+      try {
+        const res = await fetch(CONFIG.WEBAPP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action, ...data }),
+        });
+        
+        const result = await res.json();
+        
+        if (!res.ok || result.error) {
+          return { ok: false, error: result.error || `HTTP ${res.status}` };
         }
-        ctx.fillText(foodTheme.emoji, cx, cy + 1);
-      } else {
-        ctx.fillStyle = foodTheme.color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, CELL / 2.6, 0, Math.PI * 2);
-        ctx.fill();
+        
+        return { ok: true, ...result };
+      } catch (err) {
+        console.warn('Cloud request failed:', err);
+        return { ok: false, error: 'network' };
       }
-    });
-    if (foodFontSet) {
-      ctx.textAlign    = 'left';
-      ctx.textBaseline = 'alphabetic';
-    }
-
-    if (colorTheme.rainbow) {
-      snake.forEach((s, i) => {
-        const hue = (i * 25 + now / 20) % 360;
-        ctx.fillStyle = `hsl(${hue}, 80%, 62%)`;
-        const pad = i === 0 ? 1 : 2;
-        ctx.beginPath();
-        addRoundRectPath(s.x * CELL + pad, s.y * CELL + pad, CELL - pad * 2, CELL - pad * 2, i === 0 ? 6 : 4);
-        ctx.fill();
-      });
-    } else {
-      if (snake.length > 1) {
-        ctx.fillStyle = colorTheme.body;
-        ctx.beginPath();
-        for (let i = 1; i < snake.length; i++) {
-          const s = snake[i];
-          addRoundRectPath(s.x * CELL + 2, s.y * CELL + 2, CELL - 4, CELL - 4, 4);
-        }
-        ctx.fill();
-      }
-      if (snake[0]) {
-        ctx.fillStyle = colorTheme.head;
-        ctx.beginPath();
-        addRoundRectPath(snake[0].x * CELL + 1, snake[0].y * CELL + 1, CELL - 2, CELL - 2, 6);
-        ctx.fill();
-      }
-    }
-
-    if (shieldCharges > 0 && snake[0]) {
-      ctx.strokeStyle = '#ffd93d';
-      ctx.lineWidth   = 2;
-      const cx = snake[0].x * CELL + CELL / 2;
-      const cy = snake[0].y * CELL + CELL / 2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, CELL / 1.6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    if (particles.length) {
-      particles.forEach(p => {
-        ctx.globalAlpha = Math.max(0, p.life / 20);
-        ctx.fillStyle   = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-      });
-      ctx.globalAlpha = 1;
-    }
-
-    if (alive && waitingForFirstInput) {
-      ctx.fillStyle = 'rgba(10,10,20,0.55)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#f5f5f5';
-      ctx.font      = `${Math.floor(CELL * 0.9)}px Segoe UI, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('▶', canvas.width / 2, canvas.height / 2 - 10);
-      ctx.font = `${Math.floor(CELL * 0.5)}px Segoe UI, sans-serif`;
-      ctx.fillText('Appuie sur une flèche pour commencer', canvas.width / 2, canvas.height / 2 + 30);
-      ctx.textAlign = 'left';
-    }
-  }
-
-  function addRoundRectPath(x, y, w, h, r) {
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y,     x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x,     y + h, r);
-    ctx.arcTo(x,     y + h, x,     y,     r);
-    ctx.arcTo(x,     y,     x + w, y,     r);
-    ctx.closePath();
-  }
-
-  function updateParticles() {
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      p.x += p.vx;
-      p.y += p.vy;
-      p.life--;
-      if (p.life <= 0) particles.splice(i, 1);
-    }
-  }
-
-  const MAX_CATCHUP_TICKS = 3;
-
-  function renderLoop(now) {
-    if (lastFrameTime === null) lastFrameTime = now;
-    let dt = now - lastFrameTime;
-    lastFrameTime = now;
-    if (dt > 1000) dt = 1000;
-
-    if (isTicking) {
-      tickAccumulator += dt;
-      let ticksThisFrame = 0;
-      while (tickAccumulator >= baseTickMs && ticksThisFrame < MAX_CATCHUP_TICKS) {
-        step();
-        tickAccumulator -= baseTickMs;
-        ticksThisFrame++;
-        if (!isTicking) break;
-      }
-      if (tickAccumulator > baseTickMs * MAX_CATCHUP_TICKS) tickAccumulator = baseTickMs;
-
-      if (currentSpecialRoom === 'volcano' && lavaCycleNextAt !== null && now >= lavaCycleNextAt) {
-        cycleLavaZones();
-        lavaCycleNextAt = now + LAVA_CYCLE_MS;
-      }
-    }
-
-    if (gameWrap && !gameWrap.classList.contains('hidden')) {
-      updateParticles();
-      draw();
-    }
-    requestAnimationFrame(renderLoop);
-  }
-
-  function startTicking() {
-    isTicking       = true;
-    tickAccumulator = 0;
-    lastFrameTime   = null;
-  }
-
-  function stopTicking() {
-    isTicking = false;
-  }
+    },
+    
+    async register(username, passwordHash) {
+      return this.request('register', { username, passwordHash });
+    },
+    
+    async login(username, passwordHash) {
+      return this.request('login', { username, passwordHash });
+    },
+    
+    async getPlayer(username, sessionId) {
+      return this.request('getPlayer', { username, sessionId });
+    },
+    
+    async submitScore(username, sessionId, scoreData) {
+      return this.request('submitScore', { username, sessionId, ...scoreData });
+    },
+    
+    async shopAction(username, sessionId, action, category, itemId) {
+      return this.request('shopAction', { username, sessionId, action, category, itemId });
+    },
+    
+    async getLeaderboard() {
+      return this.request('getLeaderboard', {});
+    },
+  };
 
   // ============================================================
-  // M-01 : Pause / Reprise
+  // AUTHENTIFICATION
   // ============================================================
-  function pauseGame() {
-    // On ne peut mettre en pause que si le jeu tourne activement
-    if (!alive || paused || !isTicking) return;
-    paused = true;
-    stopTicking();
-    if (pauseOverlay) pauseOverlay.classList.remove('hidden');
-  }
 
-  function resumeGame() {
-    if (!paused) return;
-    paused = false;
-    if (pauseOverlay) pauseOverlay.classList.add('hidden');
-    startTicking(); // remet tickAccumulator a 0 pour eviter un burst
-  }
-
-  // ============================================================
-  // Navigation wiring
-  // ============================================================
-  const volumeSlider = document.getElementById('volumeSlider');
-  if (volumeSlider) {
-    volumeSlider.value = Math.round(musicVolume * 100);
-    volumeSlider.addEventListener('input', (e) => {
-      setMusicVolume(parseInt(e.target.value, 10) / 100);
-    });
-  }
-
-  function refreshMuteBtn() {
-    if (btnMuteGameEl) btnMuteGameEl.textContent = musicEnabled ? '🔊' : '🔇';
-  }
-  refreshMuteBtn();
-  if (btnMuteGameEl) {
-    btnMuteGameEl.addEventListener('click', () => {
-      setMusicMuted(musicEnabled);
-      refreshMuteBtn();
-    });
-  }
-
-  const pseudoInputEl  = document.getElementById('pseudoInput');
-  const pseudoStatusEl = document.getElementById('pseudoStatus');
-
-  function refreshPseudoLockUI() {
-    if (!pseudoInputEl) return;
-    if (isPseudoLocked()) {
-      pseudoInputEl.value    = localStorage.getItem('serpentMutant_pseudo') || '';
-      pseudoInputEl.disabled = true;
-      if (pseudoStatusEl) pseudoStatusEl.textContent = '🔒 Pseudo verrouillé définitivement';
-    } else {
-      pseudoInputEl.disabled = false;
-      pseudoInputEl.value    = localStorage.getItem('serpentMutant_pseudo') || '';
-      if (pseudoStatusEl) pseudoStatusEl.textContent = '';
-    }
-  }
-  refreshPseudoLockUI();
-
-  let pseudoCheckTimer = null;
-  if (pseudoInputEl) {
-    pseudoInputEl.addEventListener('input', (e) => {
-      if (isPseudoLocked()) return;
-      const val = e.target.value.trim();
-      if (val) localStorage.setItem('serpentMutant_pseudo', val);
-      else     localStorage.removeItem('serpentMutant_pseudo');
-
-      if (!pseudoStatusEl) return;
-      clearTimeout(pseudoCheckTimer);
-      if (!val) { pseudoStatusEl.textContent = ''; return; }
-      if (!PSEUDO_REGEX.test(val)) {
-        pseudoStatusEl.textContent = '❌ 3-18 caractères, lettres/chiffres/_/- uniquement';
-        return;
-      }
-      if (val.toLowerCase() === 'anonyme') {
-        pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
-        return;
-      }
-      pseudoStatusEl.textContent = '⏳ Vérification…';
-      pseudoCheckTimer = setTimeout(async () => {
-        const result = await checkPseudoAvailable(val);
-        if (result.available) {
-          pseudoStatusEl.textContent = '✅ Disponible';
-        } else if (result.error === 'reserved') {
-          pseudoStatusEl.textContent = '❌ Ce pseudo est réservé';
-        } else {
-          pseudoStatusEl.textContent = '❌ Déjà pris';
-        }
-      }, 500);
-    });
-  }
-
-  // Bug #41 : Verification defensive sur btnStart
-  const btnStart = document.getElementById('btnStart');
-  if (btnStart) {
-    btnStart.addEventListener('click', () => showScreen('difficulty'));
-  }
-
-  const btnOpenShop = document.getElementById('btnOpenShop');
-  if (btnOpenShop) btnOpenShop.addEventListener('click', () => showScreen('shop'));
-  const btnCloseShop = document.getElementById('btnCloseShop');
-  if (btnCloseShop) btnCloseShop.addEventListener('click', () => showScreen('menu'));
-
-  const btnOpenScores = document.getElementById('btnOpenScores');
-  if (btnOpenScores) btnOpenScores.addEventListener('click', () => showScreen('scores'));
-  const btnCloseScores = document.getElementById('btnCloseScores');
-  if (btnCloseScores) btnCloseScores.addEventListener('click', () => showScreen('menu'));
-
-  const btnCancelDifficulty = document.getElementById('btnCancelDifficulty');
-  if (btnCancelDifficulty) btnCancelDifficulty.addEventListener('click', () => showScreen('menu'));
-
-  document.querySelectorAll('.diffBtn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      selectedDifficulty = btn.dataset.diff;
-      resetRunState();
-      showScreen('game');
-      startTicking();
-    });
-  });
-
-  const btnRetry = document.getElementById('btnRetry');
-  if (btnRetry) btnRetry.addEventListener('click', () => showScreen('difficulty'));
-
-  const btnBackToMenu = document.getElementById('btnBackToMenu');
-  if (btnBackToMenu) btnBackToMenu.addEventListener('click', () => {
-    stopTicking();
-    showScreen('menu');
-  });
-
-  // M-01 : btnMenuFromGame bascule entre pause et reprise
-  if (btnMenuFromGame) {
-    btnMenuFromGame.addEventListener('click', () => {
-      if (paused) {
-        resumeGame();
-      } else if (alive && isTicking) {
-        pauseGame();
-      }
-    });
-  }
-
-  // M-01 : boutons de l'overlay pause
-  const btnResume = document.getElementById('btnResume');
-  if (btnResume) btnResume.addEventListener('click', resumeGame);
-
-  const btnQuitRun = document.getElementById('btnQuitRun');
-  if (btnQuitRun) {
-    btnQuitRun.addEventListener('click', () => {
-      paused = false;
-      if (pauseOverlay) pauseOverlay.classList.add('hidden');
-      stopTicking();
-      alive = false;
-      stopMusic();
-      clearSpecialRoomEffects();
-      showScreen('menu');
-    });
-  }
-
-  // ============================================================
-  // Feedback (Bugs/Suggestions)
-  // ============================================================
-  let currentFeedbackTab    = 'bug';
-  const feedbackBugFields   = document.getElementById('feedbackBugFields');
-  const feedbackContextInput = document.getElementById('feedbackContextInput');
-  const feedbackMessageInput = document.getElementById('feedbackMessageInput');
-  const feedbackMessageLabel = document.getElementById('feedbackMessageLabel');
-  const feedbackStatusEl    = document.getElementById('feedbackStatus');
-  const btnSubmitFeedback   = document.getElementById('btnSubmitFeedback');
-
-  function renderFeedbackTabUI() {
-    document.querySelectorAll('[data-feedback-tab]').forEach(t => {
-      t.classList.toggle('active', t.dataset.feedbackTab === currentFeedbackTab);
-    });
-    if (currentFeedbackTab === 'bug') {
-      if (feedbackBugFields)   feedbackBugFields.classList.remove('hidden');
-      if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Décris le problème';
-      if (feedbackMessageInput) feedbackMessageInput.placeholder = "Explique ce qui s'est passé...";
-    } else {
-      if (feedbackBugFields)   feedbackBugFields.classList.add('hidden');
-      if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Ton idée';
-      if (feedbackMessageInput) feedbackMessageInput.placeholder = "Qu'est-ce qu'on pourrait ajouter ou améliorer ?";
-    }
-  }
-
-  document.querySelectorAll('[data-feedback-tab]').forEach(tabEl => {
-    tabEl.addEventListener('click', () => {
-      currentFeedbackTab = tabEl.dataset.feedbackTab;
-      renderFeedbackTabUI();
-    });
-  });
-
-  // M-05 : utilise lastRunContext quand alive = false pour afficher le contexte reel
-  function openFeedbackScreen() {
-    currentFeedbackTab = 'bug';
-    if (feedbackMessageInput) feedbackMessageInput.value = '';
-    if (feedbackStatusEl)     feedbackStatusEl.textContent = '';
-    if (feedbackContextInput) {
-      if (alive) {
-        // En cours de jeu (feedback depuis le jeu — cas peu probable mais possible)
-        const specialLabel = currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]
-          ? ' (' + SPECIAL_ROOM_INFO[currentSpecialRoom].label + ')'
-          : '';
-        feedbackContextInput.value = 'Salle ' + room + specialLabel;
-      } else if (lastRunContext.room > 1 || lastRunContext.specialRoom) {
-        // M-05 : post-mortem — utiliser le contexte du dernier run
-        const specialLabel = lastRunContext.specialRoom && SPECIAL_ROOM_INFO[lastRunContext.specialRoom]
-          ? ' (' + SPECIAL_ROOM_INFO[lastRunContext.specialRoom].label + ')'
-          : '';
-        feedbackContextInput.value = 'Salle ' + lastRunContext.room + specialLabel + ' (post-mortem)';
-      } else {
-        feedbackContextInput.value = 'Menu';
-      }
-    }
-    renderFeedbackTabUI();
-  }
-
-  const btnOpenFeedback = document.getElementById('btnOpenFeedback');
-  if (btnOpenFeedback) btnOpenFeedback.addEventListener('click', () => showScreen('feedback'));
-  const btnCloseFeedback = document.getElementById('btnCloseFeedback');
-  if (btnCloseFeedback) btnCloseFeedback.addEventListener('click', () => showScreen('menu'));
-
-  const btnOpenSettings = document.getElementById('btnOpenSettings');
-  if (btnOpenSettings) btnOpenSettings.addEventListener('click', () => showScreen('settings'));
-  const btnCloseSettings = document.getElementById('btnCloseSettings');
-  if (btnCloseSettings) btnCloseSettings.addEventListener('click', () => showScreen('menu'));
-
-  const btnOpenMutations = document.getElementById('btnOpenMutations');
-  if (btnOpenMutations) btnOpenMutations.addEventListener('click', () => showScreen('mutations'));
-  const btnCloseMutations = document.getElementById('btnCloseMutations');
-  if (btnCloseMutations) btnCloseMutations.addEventListener('click', () => showScreen('menu'));
-
-  function renderMutationsScreen() {
-    const list = document.getElementById('mutationsList');
-    if (!list) return;
-    list.innerHTML = '';
-    MUTATION_POOL.forEach(mut => {
-      const known      = save.discoveredMutations.includes(mut.id);
-      const card       = document.createElement('div');
-      card.className   = 'mutCard';
-      card.style.cursor = 'default';
-      card.innerHTML   = known
-        ? `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`
-        : `<div class="mTitle" style="color:#555">❓ ????</div><div class="mDesc" style="color:#444">Mutation inconnue. Joue pour la découvrir.</div>`;
-      list.appendChild(card);
-    });
-  }
-
-  if (btnSubmitFeedback) {
-    btnSubmitFeedback.addEventListener('click', async () => {
-      const message = feedbackMessageInput ? feedbackMessageInput.value.trim() : '';
-      if (!message) {
-        if (feedbackStatusEl) {
-          feedbackStatusEl.textContent = '⚠️ Écris un message avant d\'envoyer.';
-          feedbackStatusEl.style.color = '#ff6b9d';
-        }
-        return;
-      }
-      if (!cloudEnabled()) {
-        if (feedbackStatusEl) {
-          feedbackStatusEl.textContent = '☁️ Envoi impossible : mode local uniquement (aucune URL cloud configurée).';
-          feedbackStatusEl.style.color = '#ff6b9d';
-        }
-        return;
-      }
-      btnSubmitFeedback.disabled = true;
-      if (feedbackStatusEl) {
-        feedbackStatusEl.textContent = '⏳ Envoi en cours…';
-        feedbackStatusEl.style.color = '#9a9ab5';
-      }
-
-      const context = (currentFeedbackTab === 'bug' && feedbackContextInput) ? feedbackContextInput.value.trim() : '';
-      const result  = await submitFeedbackToCloud(currentFeedbackTab, context, message);
-
-      btnSubmitFeedback.disabled = false;
+  const Auth = {
+    async register(username, password) {
+      const hash = await hashPassword(password);
+      const result = await Cloud.register(username.toLowerCase(), hash);
+      
       if (result.ok) {
-        if (feedbackStatusEl) {
-          feedbackStatusEl.textContent = '✅ Merci ! Ton retour a bien été envoyé.';
-          feedbackStatusEl.style.color = '#9a9ab5';
-        }
-        if (feedbackMessageInput) feedbackMessageInput.value = '';
-      } else if (result.error === 'rate_limited') {
-        if (feedbackStatusEl) {
-          feedbackStatusEl.textContent = '⚠️ Trop de retours envoyés, réessaie dans quelques secondes.';
-          feedbackStatusEl.style.color = '#ff6b9d';
-        }
-      } else {
-        if (feedbackStatusEl) {
-          feedbackStatusEl.textContent = '⚠️ Envoi impossible (' + result.error + ')';
-          feedbackStatusEl.style.color = '#ff6b9d';
+        const sessionId = generateSessionId();
+        State.session = { username: username.toLowerCase(), sessionId };
+        State.player = result.player;
+        Storage.set(CONFIG.SESSION_KEY, State.session);
+        return { ok: true };
+      }
+      
+      return result;
+    },
+    
+    async login(username, password) {
+      const hash = await hashPassword(password);
+      const result = await Cloud.login(username.toLowerCase(), hash);
+      
+      if (result.ok) {
+        State.session = { 
+          username: username.toLowerCase(), 
+          sessionId: result.sessionId 
+        };
+        State.player = result.player;
+        Storage.set(CONFIG.SESSION_KEY, State.session);
+        return { ok: true };
+      }
+      
+      return result;
+    },
+    
+    async restoreSession() {
+      const saved = Storage.get(CONFIG.SESSION_KEY);
+      if (!saved || !saved.username || !saved.sessionId) {
+        return false;
+      }
+      
+      const result = await Cloud.getPlayer(saved.username, saved.sessionId);
+      if (result.ok && result.player) {
+        State.session = saved;
+        State.player = result.player;
+        return true;
+      }
+      
+      Storage.remove(CONFIG.SESSION_KEY);
+      return false;
+    },
+    
+    logout() {
+      State.session = null;
+      State.player = null;
+      Storage.remove(CONFIG.SESSION_KEY);
+      UI.showScreen('auth');
+    },
+    
+    isLoggedIn() {
+      return State.session !== null && State.player !== null;
+    },
+  };
+
+  // ============================================================
+  // INTERFACE UTILISATEUR
+  // ============================================================
+
+  const UI = {
+    // Cache des éléments DOM
+    elements: {},
+    
+    init() {
+      // Cache les éléments fréquemment utilisés
+      const ids = [
+        'authOverlay', 'menuOverlay', 'difficultyOverlay', 'gameContainer',
+        'pauseOverlay', 'mutationOverlay', 'gameOverOverlay', 'shopOverlay',
+        'scoresOverlay', 'mutationsOverlay', 'settingsOverlay',
+        'authForm', 'authUsername', 'authPassword', 'authError', 'authStatus', 'authSubmitBtn',
+        'menuUsername', 'statBest', 'statEclats', 'statGames', 'cloudStatus',
+        'gameCanvas', 'hud', 'hudScore', 'hudRoom', 'hudShield', 'hudShieldCount', 'mutBar',
+        'touchControls', 'mutRoomNum', 'specialRoomBanner', 'mutationChoices',
+        'overScore', 'overRoom', 'overEclats', 'newRecordMsg',
+        'shopEclatsVal', 'shopGrid', 'shopStatus',
+        'leaderBest', 'leaderRoom', 'leaderboardList',
+        'mutationsCount', 'mutationsList',
+        'settingsUsername', 'settingsBest', 'settingsRoom', 'settingsGames', 'settingsMuts',
+      ];
+      
+      ids.forEach(id => {
+        this.elements[id] = document.getElementById(id);
+      });
+      
+      State.canvas = this.elements.gameCanvas;
+      State.ctx = State.canvas.getContext('2d');
+      
+      this.bindEvents();
+      this.resizeCanvas();
+      window.addEventListener('resize', () => this.resizeCanvas());
+    },
+    
+    bindEvents() {
+      // Auth tabs
+      document.querySelectorAll('[data-auth-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          State.authMode = btn.dataset.authTab;
+          document.querySelectorAll('[data-auth-tab]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.elements.authSubmitBtn.textContent = State.authMode === 'login' ? 'Se connecter' : 'Créer un compte';
+          this.elements.authError.classList.add('hidden');
+        });
+      });
+      
+      // Auth form
+      this.elements.authForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await this.handleAuth();
+      });
+      
+      // Menu buttons
+      document.getElementById('btnPlay').addEventListener('click', () => this.showScreen('difficulty'));
+      document.getElementById('btnShop').addEventListener('click', () => this.showScreen('shop'));
+      document.getElementById('btnScores').addEventListener('click', () => this.showScreen('scores'));
+      document.getElementById('btnMutations').addEventListener('click', () => this.showScreen('mutations'));
+      document.getElementById('btnSettings').addEventListener('click', () => this.showScreen('settings'));
+      
+      // Difficulty buttons
+      document.querySelectorAll('[data-diff]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          State.game.difficulty = btn.dataset.diff;
+          Game.start();
+        });
+      });
+      document.getElementById('btnCancelDiff').addEventListener('click', () => this.showScreen('menu'));
+      
+      // Game buttons
+      document.getElementById('btnPause').addEventListener('click', () => Game.togglePause());
+      document.getElementById('btnResume').addEventListener('click', () => Game.resume());
+      document.getElementById('btnQuitRun').addEventListener('click', () => {
+        Game.stop();
+        this.showScreen('menu');
+      });
+      
+      // Game over buttons
+      document.getElementById('btnRetry').addEventListener('click', () => this.showScreen('difficulty'));
+      document.getElementById('btnBackMenu').addEventListener('click', () => this.showScreen('menu'));
+      
+      // Shop
+      document.querySelectorAll('[data-shop-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          State.currentShopTab = btn.dataset.shopTab;
+          document.querySelectorAll('[data-shop-tab]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.renderShop();
+        });
+      });
+      document.getElementById('btnCloseShop').addEventListener('click', () => this.showScreen('menu'));
+      
+      // Scores
+      document.getElementById('btnCloseScores').addEventListener('click', () => this.showScreen('menu'));
+      
+      // Mutations
+      document.getElementById('btnCloseMutations').addEventListener('click', () => this.showScreen('menu'));
+      
+      // Settings
+      document.getElementById('btnCloseSettings').addEventListener('click', () => this.showScreen('menu'));
+      document.getElementById('btnLogout').addEventListener('click', () => Auth.logout());
+      
+      // Touch controls
+      document.querySelectorAll('[data-dir]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const dirs = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+          Game.handleDirection(dirs[btn.dataset.dir]);
+        });
+      });
+      
+      // Keyboard
+      window.addEventListener('keydown', (e) => this.handleKeydown(e));
+    },
+    
+    handleKeydown(e) {
+      // Auth screen - no game controls
+      if (State.currentScreen === 'auth') return;
+      
+      // Escape for pause
+      if (e.key === 'Escape' && State.currentScreen === 'game') {
+        e.preventDefault();
+        Game.togglePause();
+        return;
+      }
+      
+      // Game controls
+      if (State.currentScreen === 'game' && State.game.alive && !State.game.paused) {
+        const key = e.key.toLowerCase();
+        let dir = null;
+        
+        if (key === 'arrowup' || key === 'w') dir = { x: 0, y: -1 };
+        else if (key === 'arrowdown' || key === 's') dir = { x: 0, y: 1 };
+        else if (key === 'arrowleft' || key === 'a') dir = { x: -1, y: 0 };
+        else if (key === 'arrowright' || key === 'd') dir = { x: 1, y: 0 };
+        
+        if (dir) {
+          e.preventDefault();
+          Game.handleDirection(dir);
         }
       }
-    });
+    },
+    
+    async handleAuth() {
+      const username = this.elements.authUsername.value.trim();
+      const password = this.elements.authPassword.value;
+      
+      // Validation
+      if (username.length < 3 || username.length > 20) {
+        this.showAuthError('Le pseudo doit faire 3-20 caractères');
+        return;
+      }
+      
+      if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+        this.showAuthError('Pseudo: lettres, chiffres, _ et - uniquement');
+        return;
+      }
+      
+      if (password.length < 6) {
+        this.showAuthError('Mot de passe: minimum 6 caractères');
+        return;
+      }
+      
+      this.elements.authSubmitBtn.disabled = true;
+      this.elements.authStatus.textContent = '⏳ Connexion en cours...';
+      this.elements.authError.classList.add('hidden');
+      
+      const result = State.authMode === 'login' 
+        ? await Auth.login(username, password)
+        : await Auth.register(username, password);
+      
+      this.elements.authSubmitBtn.disabled = false;
+      this.elements.authStatus.textContent = '';
+      
+      if (result.ok) {
+        this.showScreen('menu');
+      } else {
+        const errorMsg = {
+          'user_not_found': 'Pseudo ou mot de passe incorrect',
+          'wrong_password': 'Pseudo ou mot de passe incorrect',
+          'username_taken': 'Ce pseudo est déjà pris',
+          'network': 'Impossible de contacter le serveur',
+        }[result.error] || result.error || 'Erreur inconnue';
+        
+        this.showAuthError(errorMsg);
+      }
+    },
+    
+    showAuthError(msg) {
+      this.elements.authError.textContent = '⚠️ ' + msg;
+      this.elements.authError.classList.remove('hidden');
+    },
+    
+    showScreen(name) {
+      State.currentScreen = name;
+      
+      // Hide all overlays
+      const overlays = ['authOverlay', 'menuOverlay', 'difficultyOverlay', 'gameContainer',
+        'pauseOverlay', 'mutationOverlay', 'gameOverOverlay', 'shopOverlay',
+        'scoresOverlay', 'mutationsOverlay', 'settingsOverlay'];
+      
+      overlays.forEach(id => {
+        const el = this.elements[id];
+        if (el) el.classList.add('hidden');
+      });
+      
+      // Show target screen
+      switch (name) {
+        case 'auth':
+          this.elements.authOverlay.classList.remove('hidden');
+          break;
+          
+        case 'menu':
+          this.updateMenuStats();
+          this.elements.menuOverlay.classList.remove('hidden');
+          break;
+          
+        case 'difficulty':
+          this.elements.difficultyOverlay.classList.remove('hidden');
+          break;
+          
+        case 'game':
+          this.elements.gameContainer.classList.remove('hidden');
+          this.updateTouchControls();
+          break;
+          
+        case 'shop':
+          this.renderShop();
+          this.elements.shopOverlay.classList.remove('hidden');
+          break;
+          
+        case 'scores':
+          this.loadLeaderboard();
+          this.elements.scoresOverlay.classList.remove('hidden');
+          break;
+          
+        case 'mutations':
+          this.renderMutations();
+          this.elements.mutationsOverlay.classList.remove('hidden');
+          break;
+          
+        case 'settings':
+          this.updateSettings();
+          this.elements.settingsOverlay.classList.remove('hidden');
+          break;
+      }
+    },
+    
+    updateMenuStats() {
+      if (!State.player) return;
+      
+      this.elements.menuUsername.textContent = State.player.username;
+      this.elements.statBest.textContent = State.player.bestScore || 0;
+      this.elements.statEclats.textContent = State.player.eclats || 0;
+      this.elements.statGames.textContent = State.player.totalGames || 0;
+    },
+    
+    updateSettings() {
+      if (!State.player) return;
+      
+      this.elements.settingsUsername.textContent = State.player.username;
+      this.elements.settingsBest.textContent = State.player.bestScore || 0;
+      this.elements.settingsRoom.textContent = State.player.bestRoom || 0;
+      this.elements.settingsGames.textContent = State.player.totalGames || 0;
+      this.elements.settingsMuts.textContent = (State.player.discoveredMutations || []).length;
+    },
+    
+    updateHUD() {
+      this.elements.hudScore.textContent = State.game.score;
+      this.elements.hudRoom.textContent = State.game.room;
+      
+      if (State.game.shieldCharges > 0) {
+        this.elements.hudShield.style.display = 'flex';
+        this.elements.hudShieldCount.textContent = State.game.shieldCharges;
+      } else {
+        this.elements.hudShield.style.display = 'none';
+      }
+    },
+    
+    updateMutBar() {
+      this.elements.mutBar.innerHTML = State.game.activeMutations
+        .map(m => `<span class="mut-chip">${m.title}</span>`)
+        .join('');
+    },
+    
+    updateTouchControls() {
+      const show = window.innerWidth <= 640;
+      this.elements.touchControls.style.display = show ? 'grid' : 'none';
+    },
+    
+    resizeCanvas() {
+      const maxW = Math.min(560, window.innerWidth - 40);
+      State.canvas.width = maxW;
+      State.canvas.height = maxW;
+      State.cellSize = maxW / CONFIG.GRID_SIZE;
+      this.updateTouchControls();
+    },
+    
+    showMutationChoice(mutations, specialRoom) {
+      this.elements.mutRoomNum.textContent = State.game.room;
+      
+      // Special room banner
+      if (specialRoom && SPECIAL_ROOMS[specialRoom]) {
+        const info = SPECIAL_ROOMS[specialRoom];
+        this.elements.specialRoomBanner.innerHTML = `
+          <div class="room-title">${info.emoji} ${info.label}</div>
+          <div class="room-desc">${info.desc}</div>
+        `;
+        this.elements.specialRoomBanner.classList.remove('hidden');
+      } else {
+        this.elements.specialRoomBanner.classList.add('hidden');
+      }
+      
+      // Mutation choices
+      this.elements.mutationChoices.innerHTML = mutations.map(m => `
+        <div class="mut-card" data-mut-id="${m.id}">
+          <div class="mut-title">${m.title}</div>
+          <div class="mut-desc">${m.desc}</div>
+        </div>
+      `).join('');
+      
+      // Bind click events
+      this.elements.mutationChoices.querySelectorAll('.mut-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const mutId = card.dataset.mutId;
+          Game.applyMutation(mutId);
+        });
+      });
+      
+      this.elements.mutationOverlay.classList.remove('hidden');
+    },
+    
+    hideMutationChoice() {
+      this.elements.mutationOverlay.classList.add('hidden');
+    },
+    
+    showGameOver(score, room, eclats, isRecord) {
+      this.elements.overScore.textContent = score;
+      this.elements.overRoom.textContent = room;
+      this.elements.overEclats.textContent = '+' + eclats;
+      
+      if (isRecord) {
+        this.elements.newRecordMsg.classList.remove('hidden');
+      } else {
+        this.elements.newRecordMsg.classList.add('hidden');
+      }
+      
+      this.elements.gameOverOverlay.classList.remove('hidden');
+    },
+    
+    showPause() {
+      this.elements.pauseOverlay.classList.remove('hidden');
+    },
+    
+    hidePause() {
+      this.elements.pauseOverlay.classList.add('hidden');
+    },
+    
+    renderShop() {
+      const catalog = SHOP[State.currentShopTab];
+      const player = State.player;
+      const unlocked = player?.unlocked?.[State.currentShopTab] || [];
+      const equippedKey = State.currentShopTab === 'colors' ? 'color' 
+        : State.currentShopTab === 'foods' ? 'food' : 'background';
+      const equippedId = player?.equipped?.[equippedKey] || catalog[0].id;
+      
+      this.elements.shopEclatsVal.textContent = player?.eclats || 0;
+      
+      this.elements.shopGrid.innerHTML = catalog.map(item => {
+        const isUnlocked = unlocked.includes(item.id) || item.price === 0;
+        const isEquipped = equippedId === item.id;
+        const canAfford = (player?.eclats || 0) >= item.price;
+        
+        let swatchStyle = '';
+        let swatchContent = '';
+        
+        if (State.currentShopTab === 'colors') {
+          swatchStyle = item.rainbow 
+            ? 'background: linear-gradient(135deg, #ff6b9d, #ffd93d, #6bcb77, #4a90ff, #a06bff);'
+            : `background: ${item.head};`;
+        } else if (State.currentShopTab === 'foods') {
+          swatchContent = item.emoji;
+          swatchStyle = 'background: rgba(255,255,255,0.08);';
+        } else {
+          swatchStyle = `background: ${item.bg}; border: 1px solid rgba(255,255,255,0.15);`;
+        }
+        
+        const classes = ['shop-item'];
+        if (isEquipped) classes.push('equipped');
+        if (!isUnlocked && !canAfford) classes.push('locked');
+        
+        return `
+          <div class="${classes.join(' ')}" data-item-id="${item.id}">
+            <div class="shop-swatch" style="${swatchStyle}">${swatchContent}</div>
+            <div class="shop-name">${item.name}</div>
+            ${isEquipped 
+              ? '<div class="shop-equipped">✓ Équipé</div>'
+              : isUnlocked 
+                ? '<div class="shop-price" style="color: #9a9ab5;">Débloqué</div>'
+                : `<div class="shop-price">💎 ${item.price}</div>`
+            }
+          </div>
+        `;
+      }).join('');
+      
+      // Bind click events
+      this.elements.shopGrid.querySelectorAll('.shop-item').forEach(el => {
+        el.addEventListener('click', () => this.handleShopClick(el.dataset.itemId));
+      });
+    },
+    
+    async handleShopClick(itemId) {
+      const catalog = SHOP[State.currentShopTab];
+      const item = catalog.find(i => i.id === itemId);
+      if (!item) return;
+      
+      const player = State.player;
+      const unlocked = player?.unlocked?.[State.currentShopTab] || [];
+      const isUnlocked = unlocked.includes(item.id) || item.price === 0;
+      const equippedKey = State.currentShopTab === 'colors' ? 'color' 
+        : State.currentShopTab === 'foods' ? 'food' : 'background';
+      const isEquipped = player?.equipped?.[equippedKey] === item.id;
+      
+      if (isEquipped) return;
+      
+      const action = isUnlocked ? 'equip' : 'buy';
+      
+      if (action === 'buy' && (player?.eclats || 0) < item.price) {
+        this.elements.shopStatus.textContent = '⚠️ Pas assez d\'éclats';
+        return;
+      }
+      
+      this.elements.shopStatus.textContent = '⏳ En cours...';
+      
+      const result = await Cloud.shopAction(
+        State.session.username,
+        State.session.sessionId,
+        action,
+        State.currentShopTab,
+        itemId
+      );
+      
+      if (result.ok && result.player) {
+        State.player = result.player;
+        this.elements.shopStatus.textContent = action === 'buy' 
+          ? '✅ Item débloqué et équipé !'
+          : '✅ Item équipé !';
+        this.renderShop();
+      } else {
+        this.elements.shopStatus.textContent = '⚠️ ' + (result.error || 'Erreur');
+      }
+    },
+    
+    async loadLeaderboard() {
+      this.elements.leaderBest.textContent = State.player?.bestScore || 0;
+      this.elements.leaderRoom.textContent = State.player?.bestRoom || 0;
+      
+      this.elements.leaderboardList.innerHTML = '<p style="color: #9a9ab5; padding: 20px;">⏳ Chargement...</p>';
+      
+      const result = await Cloud.getLeaderboard();
+      
+      if (result.ok && result.leaderboard) {
+        if (result.leaderboard.length === 0) {
+          this.elements.leaderboardList.innerHTML = '<p style="color: #9a9ab5; padding: 20px;">Aucun score. Sois le premier !</p>';
+          return;
+        }
+        
+        const medals = ['🥇', '🥈', '🥉'];
+        
+        this.elements.leaderboardList.innerHTML = result.leaderboard.map((entry, i) => {
+          const isMe = entry.username === State.player?.username;
+          return `
+            <div class="score-row ${isMe ? 'highlight' : ''}">
+              <span class="score-rank">${medals[i] || '#' + (i + 1)}</span>
+              <div class="score-details">
+                <div class="score-name">${entry.username}</div>
+                <div class="score-meta">Salle ${entry.room} · ${entry.difficulty || 'normal'}</div>
+              </div>
+              <span class="score-value">${entry.score}</span>
+            </div>
+          `;
+        }).join('');
+      } else {
+        this.elements.leaderboardList.innerHTML = '<p style="color: #ff6b9d; padding: 20px;">⚠️ Erreur de chargement</p>';
+      }
+    },
+    
+    renderMutations() {
+      const discovered = State.player?.discoveredMutations || [];
+      this.elements.mutationsCount.textContent = `${discovered.length} / ${MUTATIONS.length} découvertes`;
+      
+      this.elements.mutationsList.innerHTML = MUTATIONS.map(m => {
+        const known = discovered.includes(m.id);
+        return `
+          <div class="mut-card locked">
+            ${known ? `
+              <div class="mut-title">${m.title}</div>
+              <div class="mut-desc">${m.desc}</div>
+            ` : `
+              <div class="mut-title">❓ ????</div>
+              <div class="mut-desc" style="color: #6a6a8a;">Mutation inconnue. Joue pour la découvrir.</div>
+            `}
+          </div>
+        `;
+      }).join('');
+    },
+  };
+
+  // ============================================================
+  // MOTEUR DE JEU
+  // ============================================================
+
+  const Game = {
+    animFrameId: null,
+    
+    start() {
+      const g = State.game;
+      const diff = DIFFICULTIES[g.difficulty] || DIFFICULTIES.normal;
+      
+      // Reset state
+      g.snake = [
+        { x: 10, y: 10 },
+        { x: 9, y: 10 },
+        { x: 8, y: 10 },
+      ];
+      g.dir = { x: 1, y: 0 };
+      g.nextDir = { x: 1, y: 0 };
+      g.food = [];
+      g.obstacles = [];
+      g.particles = [];
+      g.score = 0;
+      g.room = 1;
+      g.alive = true;
+      g.paused = false;
+      g.waitingForInput = true;
+      
+      g.activeMutations = [];
+      g.speedMult = 1;
+      g.ghostMode = false;
+      g.shrinkMode = false;
+      g.scoreMultiplier = 1;
+      g.goldenEnabled = false;
+      g.magnetEnabled = false;
+      g.teleportEnabled = false;
+      g.shieldCharges = 0;
+      g.fruitsEaten = 0;
+      g.fruitsForShield = 0;
+      
+      g.specialRoom = null;
+      g.iceCells = [];
+      g.lavaCells = [];
+      g.lavaCycleAt = null;
+      
+      g.runStartTime = Date.now();
+      g.isTicking = false;
+      g.tickAccumulator = 0;
+      g.lastFrameTime = null;
+      
+      // Generate obstacles
+      this.generateObstacles(diff.obstacles);
+      
+      // Spawn food
+      this.spawnFood();
+      
+      UI.showScreen('game');
+      UI.updateHUD();
+      UI.updateMutBar();
+      
+      // Start render loop
+      this.startLoop();
+    },
+    
+    stop() {
+      const g = State.game;
+      g.alive = false;
+      g.paused = false;
+      g.isTicking = false;
+      
+      if (this.animFrameId) {
+        cancelAnimationFrame(this.animFrameId);
+        this.animFrameId = null;
+      }
+    },
+    
+    togglePause() {
+      const g = State.game;
+      if (!g.alive) return;
+      
+      if (g.paused) {
+        this.resume();
+      } else {
+        this.pause();
+      }
+    },
+    
+    pause() {
+      const g = State.game;
+      if (!g.alive || g.paused) return;
+      
+      g.paused = true;
+      g.isTicking = false;
+      UI.showPause();
+    },
+    
+    resume() {
+      const g = State.game;
+      if (!g.paused) return;
+      
+      g.paused = false;
+      g.isTicking = true;
+      g.tickAccumulator = 0;
+      g.lastFrameTime = null;
+      UI.hidePause();
+    },
+    
+    handleDirection(dir) {
+      const g = State.game;
+      if (!g.alive || g.paused) return;
+      
+      // Mirror room inversion
+      if (g.specialRoom === 'mirror') {
+        dir = { x: -dir.x, y: -dir.y };
+      }
+      
+      // Prevent 180° turn
+      if (dir.x === -g.dir.x && dir.y === -g.dir.y) return;
+      
+      g.nextDir = dir;
+      
+      if (g.waitingForInput) {
+        g.waitingForInput = false;
+        g.isTicking = true;
+        g.tickAccumulator = 0;
+        g.lastFrameTime = null;
+      }
+    },
+    
+    generateObstacles(count) {
+      const g = State.game;
+      g.obstacles = [];
+      
+      for (let i = 0; i < count; i++) {
+        let ox, oy, attempts = 0;
+        do {
+          ox = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+          oy = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+          attempts++;
+        } while (
+          attempts < 100 &&
+          (g.snake.some(s => s.x === ox && s.y === oy) ||
+           g.obstacles.some(o => o.x === ox && o.y === oy) ||
+           g.iceCells.some(c => c.x === ox && c.y === oy) ||
+           (Math.abs(ox - 10) < 3 && Math.abs(oy - 10) < 3))
+        );
+        
+        if (attempts < 100) {
+          g.obstacles.push({ x: ox, y: oy });
+        }
+      }
+    },
+    
+    spawnFood() {
+      const g = State.game;
+      let fx, fy, attempts = 0;
+      
+      do {
+        fx = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+        fy = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+        attempts++;
+      } while (
+        attempts < 200 &&
+        (g.snake.some(s => s.x === fx && s.y === fy) ||
+         g.obstacles.some(o => o.x === fx && o.y === fy) ||
+         g.food.some(f => f.x === fx && f.y === fy) ||
+         g.iceCells.some(c => c.x === fx && c.y === fy))
+      );
+      
+      const kind = g.goldenEnabled && Math.random() < 0.15 ? 'gold' : 'normal';
+      g.food.push({ x: fx, y: fy, kind });
+    },
+    
+    rollSpecialRoom() {
+      if (Math.random() < 0.4) return null;
+      const rooms = ['mirror', 'ice', 'volcano'];
+      return rooms[Math.floor(Math.random() * rooms.length)];
+    },
+    
+    setupSpecialRoom(type) {
+      const g = State.game;
+      g.specialRoom = type;
+      g.iceCells = [];
+      g.lavaCells = [];
+      g.lavaCycleAt = null;
+      
+      if (type === 'ice') {
+        const count = 8 + Math.floor(Math.random() * 8);
+        for (let i = 0; i < count; i++) {
+          let ix, iy, attempts = 0;
+          do {
+            ix = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+            iy = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+            attempts++;
+          } while (
+            attempts < 100 &&
+            (g.snake.some(s => s.x === ix && s.y === iy) ||
+             g.obstacles.some(o => o.x === ix && o.y === iy) ||
+             g.iceCells.some(c => c.x === ix && c.y === iy))
+          );
+          if (attempts < 100) {
+            g.iceCells.push({ x: ix, y: iy });
+          }
+        }
+      } else if (type === 'volcano') {
+        g.lavaCycleAt = Date.now() + CONFIG.LAVA_CYCLE_MS;
+        this.cycleLava();
+      }
+    },
+    
+    cycleLava() {
+      const g = State.game;
+      g.lavaCells = [];
+      const count = 4 + Math.floor(Math.random() * 6);
+      const now = Date.now();
+      
+      for (let i = 0; i < count; i++) {
+        let lx, ly, attempts = 0;
+        do {
+          lx = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+          ly = Math.floor(Math.random() * CONFIG.GRID_SIZE);
+          attempts++;
+        } while (
+          attempts < 100 &&
+          g.snake.some(s => s.x === lx && s.y === ly)
+        );
+        
+        if (attempts < 100) {
+          g.lavaCells.push({ x: lx, y: ly, armedAt: now + CONFIG.LAVA_ARM_DELAY });
+        }
+      }
+    },
+    
+    tick() {
+      const g = State.game;
+      if (!g.alive || g.paused || g.waitingForInput) return;
+      
+      g.dir = { ...g.nextDir };
+      const head = g.snake[0];
+      let nx = head.x + g.dir.x;
+      let ny = head.y + g.dir.y;
+      
+      // Teleport wrap
+      if (g.teleportEnabled) {
+        if (nx < 0) nx = CONFIG.GRID_SIZE - 1;
+        else if (nx >= CONFIG.GRID_SIZE) nx = 0;
+        if (ny < 0) ny = CONFIG.GRID_SIZE - 1;
+        else if (ny >= CONFIG.GRID_SIZE) ny = 0;
+      }
+      
+      // Wall collision
+      if (!g.teleportEnabled && (nx < 0 || nx >= CONFIG.GRID_SIZE || ny < 0 || ny >= CONFIG.GRID_SIZE)) {
+        if (g.shieldCharges > 0) {
+          g.shieldCharges--;
+          g.nextDir = { x: -g.dir.x, y: -g.dir.y };
+          UI.updateHUD();
+          return;
+        }
+        this.endRun();
+        return;
+      }
+      
+      // Self collision
+      if (!g.ghostMode && g.snake.some(s => s.x === nx && s.y === ny)) {
+        if (g.shieldCharges > 0) {
+          g.shieldCharges--;
+          g.nextDir = { x: -g.dir.x, y: -g.dir.y };
+          UI.updateHUD();
+          return;
+        }
+        this.endRun();
+        return;
+      }
+      
+      // Obstacle collision
+      if (g.obstacles.some(o => o.x === nx && o.y === ny)) {
+        if (g.shieldCharges > 0) {
+          g.shieldCharges--;
+          g.nextDir = { x: -g.dir.x, y: -g.dir.y };
+          UI.updateHUD();
+          return;
+        }
+        this.endRun();
+        return;
+      }
+      
+      // Lava collision
+      if (g.specialRoom === 'volcano') {
+        const now = Date.now();
+        const hitLava = g.lavaCells.find(c => c.x === nx && c.y === ny && now >= c.armedAt);
+        if (hitLava) {
+          if (g.shieldCharges > 0) {
+            g.shieldCharges--;
+            g.nextDir = { x: -g.dir.x, y: -g.dir.y };
+            UI.updateHUD();
+            return;
+          }
+          this.endRun();
+          return;
+        }
+      }
+      
+      // Move snake
+      g.snake.unshift({ x: nx, y: ny });
+      
+      // Ice slide
+      if (g.specialRoom === 'ice') {
+        const onIce = g.iceCells.some(c => c.x === nx && c.y === ny);
+        if (onIce) {
+          const slideCount = 1 + Math.floor(Math.random() * 2);
+          for (let s = 0; s < slideCount; s++) {
+            const sx = g.snake[0].x + g.dir.x;
+            const sy = g.snake[0].y + g.dir.y;
+            if (sx < 0 || sx >= CONFIG.GRID_SIZE || sy < 0 || sy >= CONFIG.GRID_SIZE) break;
+            if (g.obstacles.some(o => o.x === sx && o.y === sy)) break;
+            if (!g.ghostMode && g.snake.some(seg => seg.x === sx && seg.y === sy)) break;
+            g.snake.unshift({ x: sx, y: sy });
+          }
+        }
+      }
+      
+      // Magnet
+      if (g.magnetEnabled) {
+        const headPos = g.snake[0];
+        g.food.forEach(f => {
+          const dx = headPos.x - f.x;
+          const dy = headPos.y - f.y;
+          if (Math.abs(dx) + Math.abs(dy) <= 3) {
+            const newFx = f.x + Math.sign(dx);
+            const newFy = f.y + Math.sign(dy);
+            if (newFx >= 0 && newFx < CONFIG.GRID_SIZE &&
+                newFy >= 0 && newFy < CONFIG.GRID_SIZE &&
+                !g.obstacles.some(o => o.x === newFx && o.y === newFy) &&
+                !g.iceCells.some(c => c.x === newFx && c.y === newFy)) {
+              f.x = newFx;
+              f.y = newFy;
+            }
+          }
+        });
+      }
+      
+      // Eat food
+      let ate = false;
+      const diff = DIFFICULTIES[g.difficulty] || DIFFICULTIES.normal;
+      
+      for (let i = g.food.length - 1; i >= 0; i--) {
+        const f = g.food[i];
+        if (f.x === g.snake[0].x && f.y === g.snake[0].y) {
+          const gain = Math.ceil((f.kind === 'gold' ? 5 : 1) * g.scoreMultiplier * diff.scoreMult);
+          g.score += gain;
+          
+          // Particles
+          const CELL = State.cellSize;
+          const cx = f.x * CELL + CELL / 2;
+          const cy = f.y * CELL + CELL / 2;
+          const foodTheme = this.getEquippedFood();
+          for (let p = 0; p < 6; p++) {
+            g.particles.push({
+              x: cx,
+              y: cy,
+              vx: (Math.random() - 0.5) * 4,
+              vy: (Math.random() - 0.5) * 4,
+              life: 20,
+              color: f.kind === 'gold' ? '#ffd93d' : foodTheme.color,
+            });
+          }
+          
+          g.food.splice(i, 1);
+          ate = true;
+          g.fruitsEaten++;
+          
+          // Shrink mode
+          if (g.shrinkMode) {
+            const MIN_LEN = 3;
+            if (g.snake.length > MIN_LEN + 2) {
+              g.snake.pop();
+              g.snake.pop();
+            } else if (g.snake.length > MIN_LEN) {
+              g.snake.pop();
+            }
+          }
+        }
+      }
+      
+      if (!ate) {
+        g.snake.pop();
+      }
+      
+      if (ate) {
+        this.spawnFood();
+        
+        // Shield recharge
+        if (g.activeMutations.some(m => m.id === 'shield')) {
+          g.fruitsForShield++;
+          if (g.fruitsForShield % 5 === 0) {
+            g.shieldCharges = Math.min(g.shieldCharges + 1, 3);
+          }
+        }
+        
+        // Advance room every 12 fruits
+        if (g.fruitsEaten % 12 === 0) {
+          this.advanceRoom();
+          return;
+        }
+      }
+      
+      UI.updateHUD();
+    },
+    
+    advanceRoom() {
+      const g = State.game;
+      g.lavaCycleAt = null;
+      g.room++;
+      
+      const special = this.rollSpecialRoom();
+      g.isTicking = false;
+      
+      // Pick mutations
+      const notTaken = MUTATIONS.filter(m => !g.activeMutations.find(a => a.id === m.id));
+      let choices;
+      if (notTaken.length >= 3) {
+        choices = [...notTaken].sort(() => Math.random() - 0.5).slice(0, 3);
+      } else {
+        const taken = MUTATIONS.filter(m => g.activeMutations.find(a => a.id === m.id));
+        choices = [...notTaken.sort(() => Math.random() - 0.5), ...taken.sort(() => Math.random() - 0.5)].slice(0, 3);
+      }
+      
+      // Track discovered mutations
+      const discovered = State.player?.discoveredMutations || [];
+      choices.forEach(m => {
+        if (!discovered.includes(m.id)) {
+          discovered.push(m.id);
+        }
+      });
+      if (State.player) {
+        State.player.discoveredMutations = discovered;
+      }
+      
+      // Store pending special room
+      g._pendingSpecialRoom = special;
+      
+      UI.showMutationChoice(choices, special);
+    },
+    
+    applyMutation(mutId) {
+      const g = State.game;
+      const mut = MUTATIONS.find(m => m.id === mutId);
+      if (!mut) return;
+      
+      // Apply effect
+      switch (mut.id) {
+        case 'speed': g.speedMult *= 0.8; break;
+        case 'slow': g.speedMult *= 1.15; break;
+        case 'ghost': g.ghostMode = true; break;
+        case 'double': g.scoreMultiplier *= 2; break;
+        case 'shrink': g.shrinkMode = true; break;
+        case 'shield':
+          g.shieldCharges = Math.min(g.shieldCharges + 1, 3);
+          g.fruitsForShield = 0;
+          break;
+        case 'golden': g.goldenEnabled = true; break;
+        case 'teleport': g.teleportEnabled = true; break;
+        case 'magnet': g.magnetEnabled = true; break;
+      }
+      
+      g.activeMutations.push({ id: mut.id, title: mut.title });
+      
+      // Setup special room
+      const special = g._pendingSpecialRoom;
+      g._pendingSpecialRoom = null;
+      this.setupSpecialRoom(special);
+      
+      // Generate new obstacles
+      const diff = DIFFICULTIES[g.difficulty] || DIFFICULTIES.normal;
+      const obstCount = diff.obstacles + Math.floor(g.room / 3);
+      this.generateObstacles(obstCount);
+      
+      // Respawn food
+      g.food = [];
+      this.spawnFood();
+      
+      g.waitingForInput = true;
+      
+      UI.hideMutationChoice();
+      UI.updateHUD();
+      UI.updateMutBar();
+      
+      g.isTicking = true;
+      g.tickAccumulator = 0;
+      g.lastFrameTime = null;
+    },
+    
+    async endRun() {
+      const g = State.game;
+      g.alive = false;
+      g.paused = false;
+      g.isTicking = false;
+      
+      const eclats = Math.max(1, Math.floor(g.score / 10) + g.room);
+      const isRecord = g.score > (State.player?.bestScore || 0);
+      const durationMs = Date.now() - g.runStartTime;
+      
+      // Submit to cloud
+      if (State.session) {
+        const result = await Cloud.submitScore(
+          State.session.username,
+          State.session.sessionId,
+          {
+            score: g.score,
+            room: g.room,
+            difficulty: g.difficulty,
+            eclatsGained: eclats,
+            durationMs,
+            discoveredMutations: State.player?.discoveredMutations || [],
+          }
+        );
+        
+        if (result.ok && result.player) {
+          State.player = result.player;
+        }
+      }
+      
+      UI.showGameOver(g.score, g.room, eclats, isRecord);
+    },
+    
+    getEquippedColor() {
+      const id = State.player?.equipped?.color || 'teal';
+      return SHOP.colors.find(c => c.id === id) || SHOP.colors[0];
+    },
+    
+    getEquippedFood() {
+      const id = State.player?.equipped?.food || 'classic';
+      return SHOP.foods.find(f => f.id === id) || SHOP.foods[0];
+    },
+    
+    getEquippedBackground() {
+      const id = State.player?.equipped?.background || 'default';
+      return SHOP.backgrounds.find(b => b.id === id) || SHOP.backgrounds[0];
+    },
+    
+    startLoop() {
+      const loop = (timestamp) => {
+        this.animFrameId = requestAnimationFrame(loop);
+        
+        const g = State.game;
+        if (!g.alive && State.currentScreen !== 'game') return;
+        
+        const now = Date.now();
+        
+        // Ticking
+        if (g.isTicking && g.alive && !g.paused && !g.waitingForInput) {
+          if (g.lastFrameTime === null) {
+            g.lastFrameTime = timestamp;
+          }
+          
+          let dt = timestamp - g.lastFrameTime;
+          g.lastFrameTime = timestamp;
+          if (dt > 1000) dt = 1000;
+          
+          const diff = DIFFICULTIES[g.difficulty] || DIFFICULTIES.normal;
+          const baseTickMs = diff.tickMs * g.speedMult;
+          g.tickAccumulator += dt;
+          
+          let ticksThisFrame = 0;
+          while (g.tickAccumulator >= baseTickMs && ticksThisFrame < 3) {
+            this.tick();
+            g.tickAccumulator -= baseTickMs;
+            ticksThisFrame++;
+            if (!g.alive) break;
+          }
+          
+          if (g.tickAccumulator > baseTickMs * 3) {
+            g.tickAccumulator = baseTickMs;
+          }
+          
+          // Lava cycle
+          if (g.specialRoom === 'volcano' && g.lavaCycleAt !== null && now >= g.lavaCycleAt) {
+            this.cycleLava();
+            g.lavaCycleAt = now + CONFIG.LAVA_CYCLE_MS;
+          }
+        }
+        
+        // Update particles
+        for (let i = g.particles.length - 1; i >= 0; i--) {
+          const p = g.particles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+          p.life--;
+          if (p.life <= 0) g.particles.splice(i, 1);
+        }
+        
+        // Render
+        this.render(now);
+      };
+      
+      this.animFrameId = requestAnimationFrame(loop);
+    },
+    
+    render(now) {
+      const g = State.game;
+      const ctx = State.ctx;
+      const canvas = State.canvas;
+      const CELL = State.cellSize;
+      
+      const bgTheme = this.getEquippedBackground();
+      const colorTheme = this.getEquippedColor();
+      const foodTheme = this.getEquippedFood();
+      
+      // Clear
+      canvas.style.background = bgTheme.bg;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Grid
+      ctx.strokeStyle = bgTheme.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i <= CONFIG.GRID_SIZE; i++) {
+        ctx.moveTo(i * CELL, 0);
+        ctx.lineTo(i * CELL, canvas.height);
+        ctx.moveTo(0, i * CELL);
+        ctx.lineTo(canvas.width, i * CELL);
+      }
+      ctx.stroke();
+      
+      // Ice cells
+      if (g.specialRoom === 'ice' && g.iceCells.length) {
+        ctx.fillStyle = 'rgba(180, 220, 255, 0.15)';
+        ctx.beginPath();
+        g.iceCells.forEach(c => this.roundRect(ctx, c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
+        ctx.fill();
+      }
+      
+      // Lava cells
+      if (g.specialRoom === 'volcano' && g.lavaCells.length) {
+        const blink = Math.floor(now / 150) % 2 === 0;
+        g.lavaCells.forEach(c => {
+          if (now >= c.armedAt) {
+            ctx.fillStyle = '#ff4a2f';
+          } else if (blink) {
+            ctx.fillStyle = 'rgba(255, 150, 60, 0.55)';
+          } else {
+            ctx.fillStyle = 'rgba(255, 90, 40, 0.3)';
+          }
+          ctx.beginPath();
+          this.roundRect(ctx, c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5);
+          ctx.fill();
+        });
+      }
+      
+      // Obstacles
+      if (g.obstacles.length) {
+        ctx.fillStyle = '#3a3a5c';
+        ctx.beginPath();
+        g.obstacles.forEach(o => this.roundRect(ctx, o.x * CELL + 2, o.y * CELL + 2, CELL - 4, CELL - 4, 4));
+        ctx.fill();
+      }
+      
+      // Food
+      g.food.forEach(f => {
+        const cx = f.x * CELL + CELL / 2;
+        const cy = f.y * CELL + CELL / 2;
+        
+        if (f.kind === 'gold') {
+          ctx.fillStyle = '#ffd93d';
+          ctx.beginPath();
+          ctx.arc(cx, cy, CELL / 2.6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#fff8d6';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        } else if (foodTheme.emoji) {
+          ctx.font = `${Math.floor(CELL * 0.85)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(foodTheme.emoji, cx, cy + 1);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
+        } else {
+          ctx.fillStyle = foodTheme.color;
+          ctx.beginPath();
+          ctx.arc(cx, cy, CELL / 2.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+      
+      // Snake
+      if (colorTheme.rainbow) {
+        g.snake.forEach((s, i) => {
+          const hue = (i * 25 + now / 20) % 360;
+          ctx.fillStyle = `hsl(${hue}, 80%, 62%)`;
+          const pad = i === 0 ? 1 : 2;
+          ctx.beginPath();
+          this.roundRect(ctx, s.x * CELL + pad, s.y * CELL + pad, CELL - pad * 2, CELL - pad * 2, i === 0 ? 6 : 4);
+          ctx.fill();
+        });
+      } else {
+        // Body
+        if (g.snake.length > 1) {
+          ctx.fillStyle = colorTheme.body;
+          ctx.beginPath();
+          for (let i = 1; i < g.snake.length; i++) {
+            this.roundRect(ctx, g.snake[i].x * CELL + 2, g.snake[i].y * CELL + 2, CELL - 4, CELL - 4, 4);
+          }
+          ctx.fill();
+        }
+        
+        // Head
+        if (g.snake.length > 0) {
+          ctx.fillStyle = colorTheme.head;
+          ctx.beginPath();
+          this.roundRect(ctx, g.snake[0].x * CELL + 1, g.snake[0].y * CELL + 1, CELL - 2, CELL - 2, 6);
+          ctx.fill();
+        }
+      }
+      
+      // Shield indicator
+      if (g.shieldCharges > 0 && g.snake[0]) {
+        ctx.strokeStyle = '#ffd93d';
+        ctx.lineWidth = 2;
+        const scx = g.snake[0].x * CELL + CELL / 2;
+        const scy = g.snake[0].y * CELL + CELL / 2;
+        ctx.beginPath();
+        ctx.arc(scx, scy, CELL / 1.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      
+      // Particles
+      if (g.particles.length) {
+        g.particles.forEach(p => {
+          ctx.globalAlpha = Math.max(0, p.life / 20);
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.globalAlpha = 1;
+      }
+      
+      // "Press to start" overlay
+      if (g.alive && g.waitingForInput) {
+        ctx.fillStyle = 'rgba(10,10,20,0.55)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#f5f5f5';
+        ctx.font = `${Math.floor(CELL * 0.9)}px Segoe UI, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText('▶', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.font = `${Math.floor(CELL * 0.5)}px Segoe UI, sans-serif`;
+        ctx.fillText('Appuie sur une flèche', canvas.width / 2, canvas.height / 2 + 30);
+        ctx.textAlign = 'left';
+      }
+    },
+    
+    roundRect(ctx, x, y, w, h, r) {
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    },
+  };
+
+  // ============================================================
+  // INITIALISATION
+  // ============================================================
+
+  async function init() {
+    UI.init();
+    
+    // Try to restore session
+    const restored = await Auth.restoreSession();
+    
+    if (restored) {
+      UI.showScreen('menu');
+    } else {
+      UI.showScreen('auth');
+    }
   }
 
-  showScreen('menu');
-  requestAnimationFrame(renderLoop);
-
-  // C-03 : Synchronisation des eclats depuis le cloud au demarrage
-  syncEclatsFromCloud();
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 
 })();
