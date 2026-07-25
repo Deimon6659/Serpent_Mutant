@@ -1,22 +1,35 @@
 /**
  * ============================================================
  * Fichier      : game.js
- * Version      : V1.15
- * Derniere maj : 23/07/2026 (audit du 23/07/2026 - bugs #41, #42, #43,
- *                #46, #47 corriges :
- *                #41 : crash au chargement si #btnStart absent de index.html
- *                protege par une verification defensive.
- *                #42 : ré-initialisation propre du mode capture de touches
- *                lors du clic sur 'Changer' dans les Réglages pour éviter
- *                l'affichage orphelin de '…' / '?'.
- *                #43 : verification defensive sur #shopMetaVal dans
- *                refreshTopHud() pour eviter toute exception DOM.
- *                #46 : affichage majuscule des touches a lettre unique dans
- *                l'ecran des reglages (ex: 'W' au lieu de 'w').
- *                #47 : seuil minimum de deplacement ajoute au swipe tactile
- *                pour eviter les faux changements de direction sur tap.)
+ * Version      : V1.16
+ * Derniere maj : 24/07/2026 (corrections red-team C-02, C-03, H-03, M-01, M-03, M-05 :
+ *                C-02 : ajout de runStartTime (initialise dans resetRunState) et
+ *                       transmission de elapsed = Date.now() - runStartTime dans
+ *                       submitScoreToCloud() pour la validation de plausibilite
+ *                       cote serveur (voir Code.gs V1.08).
+ *                C-03 : ajout de syncEclatsFromCloud() appelee au demarrage ;
+ *                       si le cloud possede plus d'eclats que le localStorage
+ *                       (autre appareil, reset local), le local est mis a jour.
+ *                       Si le local est superieur (jeu hors-ligne), le cloud est
+ *                       resynchronise pour corriger les eventuel ecarts.
+ *                H-03 : ajout du check isIceCell(nx, ny) dans la boucle de
+ *                       deplacement magnetique pour empecher la nourriture
+ *                       d'etre attire sur une case de glace (case non accessible).
+ *                M-01 : vrai mode pause implementé via pauseGame() / resumeGame().
+ *                       btnMenuFromGame bascule entre pause et reprise sans tuer
+ *                       le run. La touche Echap fait de meme. Un overlay dedie
+ *                       (#pauseOverlay) propose Reprendre ou Quitter le run.
+ *                M-03 : remplacement de la condition fruitsEatenThisRun % 5 === 0
+ *                       par un compteur dedie fruitsEatenSinceShield, remis a zero
+ *                       a chaque prise (ou reprise) de la mutation Bouclier.
+ *                       La recharge se declenche exactement tous les 5 fruits
+ *                       apres la prise de la mutation, sans ambiguite de modulo.
+ *                M-05 : lastRunContext sauvegarde dans endRun() avant la mort,
+ *                       utilise dans openFeedbackScreen() pour afficher le vrai
+ *                       contexte de salle post-mortem (ex: "Salle 7 (Salle Volcan)
+ *                       (post-mortem)") au lieu de "Menu".)
  * — Historique precedent :
- *   V1.14 / 23/07/2026 - ajout ecran Reglages & remap
+ *   V1.15 / 23/07/2026 - bugs #41, #42, #43, #46, #47 corriges
  * ============================================================
  */
 (() => {
@@ -31,7 +44,7 @@
     return {
       best: 0,
       meta: 0,
-      topScores: [], // [{score, room, date}] max 5, sorted desc
+      topScores: [],
       unlocked: { colors: ['teal'], foods: ['classic'], backgrounds: ['default'] },
       equipped: { color: 'teal', food: 'classic', background: 'default' },
       discoveredMutations: []
@@ -49,13 +62,13 @@
           meta: typeof parsed.meta === 'number' ? parsed.meta : d.meta,
           topScores: Array.isArray(parsed.topScores) ? parsed.topScores : d.topScores,
           unlocked: {
-            colors: parsed.unlocked?.colors || d.unlocked.colors,
-            foods: parsed.unlocked?.foods || d.unlocked.foods,
+            colors:      parsed.unlocked?.colors      || d.unlocked.colors,
+            foods:       parsed.unlocked?.foods       || d.unlocked.foods,
             backgrounds: parsed.unlocked?.backgrounds || d.unlocked.backgrounds
           },
           equipped: {
-            color: parsed.equipped?.color || d.equipped.color,
-            food: parsed.equipped?.food || d.equipped.food,
+            color:      parsed.equipped?.color      || d.equipped.color,
+            food:       parsed.equipped?.food       || d.equipped.food,
             background: parsed.equipped?.background || d.equipped.background
           },
           discoveredMutations: Array.isArray(parsed.discoveredMutations) ? parsed.discoveredMutations : d.discoveredMutations
@@ -85,7 +98,8 @@
   // Key bindings (remap)
   // ============================================================
   const DEFAULT_BINDINGS = { up: 'w', down: 's', left: 'a', right: 'd' };
-  const BINDING_BLOCKED = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Escape','Tab']);
+  const BINDING_BLOCKED  = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Escape','Tab']);
+
   function loadBindings() {
     try {
       const raw = localStorage.getItem('serpentMutant_keybindings');
@@ -98,13 +112,13 @@
           right: p.right || DEFAULT_BINDINGS.right
         };
       }
-    } catch(e) {}
+    } catch (e) {}
     return { ...DEFAULT_BINDINGS };
   }
   function saveBindings(b) {
-    try { localStorage.setItem('serpentMutant_keybindings', JSON.stringify(b)); } catch(e) {}
+    try { localStorage.setItem('serpentMutant_keybindings', JSON.stringify(b)); } catch (e) {}
   }
-  let keyBindings = loadBindings();
+  let keyBindings  = loadBindings();
   let capturingDir = null;
 
   // ============================================================
@@ -112,17 +126,17 @@
   // ============================================================
   const MUSIC_TRACKS = {
     classic: 'audio/theme-classic.mp3',
-    ice: 'audio/theme-ice.mp3',
+    ice:     'audio/theme-ice.mp3',
     volcano: 'audio/theme-volcano.mp3'
   };
 
-  let currentAudio = null;
-  let musicEnabled = localStorage.getItem('serpentMutant_muted') !== '1';
-  let musicVolume = (() => {
+  let currentAudio   = null;
+  let musicEnabled   = localStorage.getItem('serpentMutant_muted') !== '1';
+  let musicVolume    = (() => {
     const v = parseFloat(localStorage.getItem('serpentMutant_volume'));
     return isNaN(v) ? 0.4 : v;
   })();
-  let lastPlayedTrack = null;
+  let lastPlayedTrack  = null;
   let _musicGeneration = 0;
 
   function setMusicVolume(v) {
@@ -158,43 +172,37 @@
     lastPlayedTrack = { trackKey, reversed };
     if (!musicEnabled) return;
     stopMusic();
-
     const src = MUSIC_TRACKS[trackKey];
     if (!src) return;
-
-    if (reversed) {
-      playReversedTrack(src);
-      return;
-    }
-
+    if (reversed) { playReversedTrack(src); return; }
     const audio = new Audio(src);
-    audio.loop = true;
+    audio.loop   = true;
     audio.volume = musicVolume;
     audio.play().catch(() => {});
     currentAudio = audio;
   }
 
   let reversedBufferCache = {};
-  let sharedAudioCtx = null;
+  let sharedAudioCtx      = null;
   function getAudioCtx_() {
     if (!sharedAudioCtx) {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      sharedAudioCtx = new AudioContextClass();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      sharedAudioCtx = new AC();
     }
     return sharedAudioCtx;
   }
+
   async function playReversedTrack(src) {
     const myGeneration = _musicGeneration;
     try {
       const audioCtx = getAudioCtx_();
-
       let buffer = reversedBufferCache[src];
       if (!buffer) {
-        const response = await fetch(src);
+        const response    = await fetch(src);
         if (myGeneration !== _musicGeneration) return;
         const arrayBuffer = await response.arrayBuffer();
         if (myGeneration !== _musicGeneration) return;
-        const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+        const decoded     = await audioCtx.decodeAudioData(arrayBuffer);
         if (myGeneration !== _musicGeneration) return;
         for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
           decoded.getChannelData(ch).reverse();
@@ -204,10 +212,9 @@
       } else if (myGeneration !== _musicGeneration) {
         return;
       }
-
-      const source = audioCtx.createBufferSource();
-      source.buffer = buffer;
-      source.loop = true;
+      const source   = audioCtx.createBufferSource();
+      source.buffer  = buffer;
+      source.loop    = true;
       const gainNode = audioCtx.createGain();
       gainNode.gain.value = musicVolume;
       source.connect(gainNode);
@@ -215,7 +222,6 @@
       await audioCtx.resume();
       if (myGeneration !== _musicGeneration) return;
       source.start(0);
-
       currentAudio = {
         pause: () => { try { source.stop(); } catch (e) {} },
         currentTime: 0,
@@ -251,8 +257,8 @@
   function setCloudStatus(text, isError) {
     const el = document.getElementById('cloudStatus');
     if (!el) return;
-    el.textContent = text;
-    el.style.color = isError ? '#ff6b9d' : '#9a9ab5';
+    el.textContent   = text;
+    el.style.color   = isError ? '#ff6b9d' : '#9a9ab5';
     if (isError) lastCloudErrorTimestamp = Date.now();
   }
 
@@ -265,20 +271,22 @@
     }
   }
 
-  async function submitScoreToCloud(scoreVal, roomVal, eclatsGagnes, difficulty) {
+  // C-02 : Parametre elapsed ajoute pour la validation de plausibilite cote serveur
+  async function submitScoreToCloud(scoreVal, roomVal, eclatsGagnes, difficulty, elapsed = 0) {
     if (!cloudEnabled()) return;
     try {
       const res = await fetch(WEBAPP_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
-          action: 'submitScore',
-          playerId: PLAYER_ID,
-          pseudo: (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
-          score: scoreVal,
-          room: roomVal,
-          difficulty: difficulty,
-          eclats: eclatsGagnes
+          action:    'submitScore',
+          playerId:  PLAYER_ID,
+          pseudo:    (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
+          score:     scoreVal,
+          room:      roomVal,
+          difficulty,
+          eclats:    eclatsGagnes,
+          elapsed:   Math.round(elapsed)   // C-02 : duree du run en ms
         })
       });
       const data = await res.json().catch(() => null);
@@ -287,6 +295,8 @@
           setCloudStatus('⚠️ Pseudo déjà pris — choisis-en un autre', true);
         } else if (data && data.error === 'rate_limited') {
           setCloudStatus('⚠️ Trop de requêtes, réessaie dans quelques secondes', true);
+        } else if (data && data.error === 'score_implausible') {
+          setCloudStatus('⚠️ Score non validé (valeur implausible)', true);
         } else {
           setCloudStatus('⚠️ Score non envoyé (' + (data && data.error ? data.error : ('HTTP ' + res.status)) + ')', true);
         }
@@ -307,12 +317,12 @@
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
-          action: 'submitFeedback',
+          action:   'submitFeedback',
           playerId: PLAYER_ID,
-          pseudo: (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
-          type: type,
-          context: context || '',
-          message: message
+          pseudo:   (localStorage.getItem('serpentMutant_pseudo') || 'Anonyme'),
+          type,
+          context:  context || '',
+          message
         })
       });
       const data = await res.json().catch(() => null);
@@ -333,9 +343,9 @@
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
-          action: 'saveEclats',
-          playerId: PLAYER_ID,
-          totalEclats: totalEclats
+          action:      'saveEclats',
+          playerId:    PLAYER_ID,
+          totalEclats
         })
       });
       const data = await res.json().catch(() => null);
@@ -345,6 +355,31 @@
     } catch (err) {
       console.warn('Sauvegarde des Éclats au cloud a échoué :', err);
       setCloudStatus('⚠️ Synchro Éclats impossible', true);
+    }
+  }
+
+  // C-03 : Synchronisation des eclats au demarrage — le cloud est la reference
+  // Si cloud > local : mise a jour du local (autre appareil ou reset).
+  // Si local > cloud : re-synchronisation du cloud (jeu hors-ligne legitime).
+  async function syncEclatsFromCloud() {
+    if (!cloudEnabled()) return;
+    try {
+      const res  = await fetch(WEBAPP_URL + '?action=getPlayer&playerId=' + encodeURIComponent(PLAYER_ID));
+      const data = await res.json().catch(() => null);
+      if (!data || typeof data.eclats !== 'number' || data.eclats < 0) return;
+      const cloudEclats = data.eclats;
+      if (cloudEclats > save.meta) {
+        // Le cloud a plus d'eclats : on met le local a jour
+        save.meta = cloudEclats;
+        writeSave(save);
+        refreshTopHud();
+        setCloudStatus('☁️ Éclats synchronisés depuis le cloud');
+      } else if (cloudEclats < save.meta) {
+        // Le local a plus d'eclats (jeu hors-ligne) : on re-synchronise le cloud
+        saveEclatsToCloud(save.meta);
+      }
+    } catch (e) {
+      console.warn('Synchro éclats au demarrage impossible :', e);
     }
   }
 
@@ -372,7 +407,7 @@
   async function fetchGlobalTopScores() {
     if (!cloudEnabled()) return [];
     try {
-      const res = await fetch(WEBAPP_URL + '?action=getTopScores');
+      const res  = await fetch(WEBAPP_URL + '?action=getTopScores');
       const data = await res.json();
       if (data && data.error) {
         setCloudStatus('⚠️ Classement global : ' + data.error, true);
@@ -396,14 +431,14 @@
   // Shop catalog
   // ============================================================
   const SHOP_COLORS = [
-    { id: 'teal',    name: 'Turquoise',  price: 0,   head: '#0fbfae', body: '#0a9d90' },
-    { id: 'pink',    name: 'Rose',       price: 50,  head: '#ff6b9d', body: '#d94f7f' },
-    { id: 'gold',    name: 'Or',         price: 80,  head: '#ffd93d', body: '#d9af1f' },
-    { id: 'purple',  name: 'Violet',     price: 120, head: '#a06bff', body: '#7c4fd9' },
-    { id: 'green',   name: 'Vert forêt', price: 150, head: '#6bcb77', body: '#4a9d55' },
-    { id: 'blue',    name: 'Bleu roi',   price: 200, head: '#4a90ff', body: '#2f6fd9' },
-    { id: 'orange',  name: 'Orange',     price: 250, head: '#ff9d4a', body: '#d97a2f' },
-    { id: 'red',     name: 'Rouge',      price: 300, head: '#ff4a5c', body: '#d92f3f' },
+    { id: 'teal',    name: 'Turquoise',   price: 0,   head: '#0fbfae', body: '#0a9d90' },
+    { id: 'pink',    name: 'Rose',        price: 50,  head: '#ff6b9d', body: '#d94f7f' },
+    { id: 'gold',    name: 'Or',          price: 80,  head: '#ffd93d', body: '#d9af1f' },
+    { id: 'purple',  name: 'Violet',      price: 120, head: '#a06bff', body: '#7c4fd9' },
+    { id: 'green',   name: 'Vert forêt',  price: 150, head: '#6bcb77', body: '#4a9d55' },
+    { id: 'blue',    name: 'Bleu roi',    price: 200, head: '#4a90ff', body: '#2f6fd9' },
+    { id: 'orange',  name: 'Orange',      price: 250, head: '#ff9d4a', body: '#d97a2f' },
+    { id: 'red',     name: 'Rouge',       price: 300, head: '#ff4a5c', body: '#d92f3f' },
     { id: 'rainbow', name: 'Arc-en-ciel', price: 400, head: '#ff6b9d', body: '#a06bff', rainbow: true }
   ];
 
@@ -420,16 +455,16 @@
   ];
 
   const SHOP_BACKGROUNDS = [
-    { id: 'default', name: 'Nuit', price: 0,   bg: '#10101c', grid: 'rgba(255,255,255,0.03)' },
-    { id: 'ocean',    name: 'Océan', price: 60,  bg: '#0a1e2e', grid: 'rgba(80,180,255,0.06)' },
-    { id: 'forest',   name: 'Forêt', price: 110, bg: '#0e1f14', grid: 'rgba(107,203,119,0.07)' },
-    { id: 'sunset',   name: 'Coucher de soleil', price: 180, bg: '#2e1420', grid: 'rgba(255,107,157,0.06)' },
-    { id: 'void',     name: 'Vide stellaire', price: 260, bg: '#050510', grid: 'rgba(160,107,255,0.08)' }
+    { id: 'default', name: 'Nuit',               price: 0,   bg: '#10101c', grid: 'rgba(255,255,255,0.03)' },
+    { id: 'ocean',   name: 'Océan',              price: 60,  bg: '#0a1e2e', grid: 'rgba(80,180,255,0.06)'  },
+    { id: 'forest',  name: 'Forêt',              price: 110, bg: '#0e1f14', grid: 'rgba(107,203,119,0.07)' },
+    { id: 'sunset',  name: 'Coucher de soleil',  price: 180, bg: '#2e1420', grid: 'rgba(255,107,157,0.06)' },
+    { id: 'void',    name: 'Vide stellaire',      price: 260, bg: '#050510', grid: 'rgba(160,107,255,0.08)' }
   ];
 
   function shopCatalog(tab) {
     if (tab === 'colors') return SHOP_COLORS;
-    if (tab === 'foods') return SHOP_FOODS;
+    if (tab === 'foods')  return SHOP_FOODS;
     return SHOP_BACKGROUNDS;
   }
   function unlockedKey(tab) {
@@ -440,24 +475,24 @@
   }
 
   let _equippedColorCache = null, _equippedColorId = null;
-  let _equippedFoodCache = null, _equippedFoodId = null;
-  let _equippedBgCache = null, _equippedBgId = null;
+  let _equippedFoodCache  = null, _equippedFoodId  = null;
+  let _equippedBgCache    = null, _equippedBgId    = null;
 
   function getEquippedColor() {
     if (_equippedColorCache && _equippedColorId === save.equipped.color) return _equippedColorCache;
-    _equippedColorId = save.equipped.color;
+    _equippedColorId    = save.equipped.color;
     _equippedColorCache = SHOP_COLORS.find(c => c.id === save.equipped.color) || SHOP_COLORS[0];
     return _equippedColorCache;
   }
   function getEquippedFood() {
     if (_equippedFoodCache && _equippedFoodId === save.equipped.food) return _equippedFoodCache;
-    _equippedFoodId = save.equipped.food;
+    _equippedFoodId    = save.equipped.food;
     _equippedFoodCache = SHOP_FOODS.find(f => f.id === save.equipped.food) || SHOP_FOODS[0];
     return _equippedFoodCache;
   }
   function getEquippedBackground() {
     if (_equippedBgCache && _equippedBgId === save.equipped.background) return _equippedBgCache;
-    _equippedBgId = save.equipped.background;
+    _equippedBgId    = save.equipped.background;
     _equippedBgCache = SHOP_BACKGROUNDS.find(b => b.id === save.equipped.background) || SHOP_BACKGROUNDS[0];
     return _equippedBgCache;
   }
@@ -466,13 +501,13 @@
   // Canvas setup
   // ============================================================
   const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  const GRID = 20;
-  let CELL = canvas.width / GRID;
+  const ctx    = canvas.getContext('2d');
+  const GRID   = 20;
+  let CELL     = canvas.width / GRID;
 
   function resizeCanvas() {
-    const maxW = Math.min(560, window.innerWidth - 40);
-    canvas.width = maxW;
+    const maxW  = Math.min(560, window.innerWidth - 40);
+    canvas.width  = maxW;
     canvas.height = maxW;
     CELL = canvas.width / GRID;
     const gw = document.getElementById('gameWrap');
@@ -492,26 +527,28 @@
   // ============================================================
   // DOM refs
   // ============================================================
-  const scoreVal = document.getElementById('scoreVal');
-  const roomVal = document.getElementById('roomVal');
-  const bestVal = document.getElementById('bestVal');
-  const metaVal = document.getElementById('metaVal');
-  const mutBar = document.getElementById('mutBar');
-  const hud = document.getElementById('hud');
-  const gameWrap = document.getElementById('gameWrap');
+  const scoreVal       = document.getElementById('scoreVal');
+  const roomVal        = document.getElementById('roomVal');
+  const bestVal        = document.getElementById('bestVal');
+  const metaVal        = document.getElementById('metaVal');
+  const mutBar         = document.getElementById('mutBar');
+  const hud            = document.getElementById('hud');
+  const gameWrap       = document.getElementById('gameWrap');
   const btnMenuFromGame = document.getElementById('btnMenuFromGame');
-  const btnMuteGameEl = document.getElementById('btnMuteGame');
-  const touchControls = document.getElementById('touchControls');
+  const btnMuteGameEl  = document.getElementById('btnMuteGame');
+  const touchControls  = document.getElementById('touchControls');
 
-  const menuOverlay = document.getElementById('menuOverlay');
+  const menuOverlay      = document.getElementById('menuOverlay');
   const difficultyOverlay = document.getElementById('difficultyOverlay');
-  const shopOverlay = document.getElementById('shopOverlay');
-  const scoresOverlay = document.getElementById('scoresOverlay');
-  const overlayMut = document.getElementById('mutOverlay');
-  const overlayOver = document.getElementById('overOverlay');
-  const feedbackOverlay = document.getElementById('feedbackOverlay');
-  const settingsOverlay = document.getElementById('settingsOverlay');
+  const shopOverlay      = document.getElementById('shopOverlay');
+  const scoresOverlay    = document.getElementById('scoresOverlay');
+  const overlayMut       = document.getElementById('mutOverlay');
+  const overlayOver      = document.getElementById('overOverlay');
+  const feedbackOverlay  = document.getElementById('feedbackOverlay');
+  const settingsOverlay  = document.getElementById('settingsOverlay');
   const mutationsOverlay = document.getElementById('mutationsOverlay');
+  // M-01 : overlay de pause
+  const pauseOverlay     = document.getElementById('pauseOverlay');
 
   // Bug #43 : Accès defensif sur shopMetaVal
   function refreshTopHud() {
@@ -530,6 +567,9 @@
   // Screen management
   // ============================================================
   function showScreen(name) {
+    // M-01 : toujours fermer la pause en changeant d'ecran
+    if (pauseOverlay) pauseOverlay.classList.add('hidden');
+
     menuOverlay.classList.add('hidden');
     shopOverlay.classList.add('hidden');
     scoresOverlay.classList.add('hidden');
@@ -597,26 +637,26 @@
     if (!grid) return;
     grid.innerHTML = '';
     const catalog = shopCatalog(currentShopTab);
-    const uKey = unlockedKey(currentShopTab);
-    const eKey = equippedKey(currentShopTab);
+    const uKey    = unlockedKey(currentShopTab);
+    const eKey    = equippedKey(currentShopTab);
 
     catalog.forEach(item => {
       const isUnlocked = save.unlocked[uKey].includes(item.id) || item.price === 0;
       const isEquipped = save.equipped[eKey] === item.id;
-      const canAfford = save.meta >= item.price;
+      const canAfford  = save.meta >= item.price;
 
       const cell = document.createElement('div');
       cell.className = 'shopItem' + (isEquipped ? ' equipped' : '') + (!isUnlocked && !canAfford ? ' locked' : '');
 
       let swatchContent = '';
-      let swatchStyle = '';
+      let swatchStyle   = '';
       if (currentShopTab === 'colors') {
         swatchStyle = item.rainbow
           ? `background: linear-gradient(135deg, #ff6b9d, #ffd93d, #6bcb77, #4a90ff, #a06bff);`
           : `background: ${item.head};`;
       } else if (currentShopTab === 'foods') {
         swatchContent = item.emoji;
-        swatchStyle = `background: rgba(255,255,255,0.08);`;
+        swatchStyle   = `background: rgba(255,255,255,0.08);`;
       } else {
         swatchStyle = `background: ${item.bg}; border: 1px solid rgba(255,255,255,0.15);`;
       }
@@ -658,7 +698,7 @@
   function renderDifficultyScreen() {
     document.querySelectorAll('.diffBtn').forEach(btn => {
       const isSelected = btn.dataset.diff === selectedDifficulty;
-      btn.style.outline = isSelected ? '2px solid var(--accent)' : 'none';
+      btn.style.outline    = isSelected ? '2px solid var(--accent)' : 'none';
       btn.style.background = isSelected ? 'rgba(15,191,174,0.15)' : '';
     });
   }
@@ -675,10 +715,10 @@
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
     if (scores.length === 0) {
-      list.innerHTML = `<div class="emptyScores">Aucun score enregistré pour l’instant. Lance un run !</div>`;
+      list.innerHTML = `<div class="emptyScores">Aucun score enregistré pour l'instant. Lance un run !</div>`;
     } else {
       scores.forEach((s, i) => {
-        const row = document.createElement('div');
+        const row   = document.createElement('div');
         row.className = 'scoreRow';
         const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i] || (i + 1);
         row.innerHTML = `
@@ -691,46 +731,39 @@
         list.appendChild(row);
       });
     }
-
     renderGlobalScores();
   }
 
   async function renderGlobalScores() {
     const section = document.getElementById('globalScoresSection');
-    const list = document.getElementById('globalScoresList');
+    const list    = document.getElementById('globalScoresList');
     if (!section || !list) return;
-    if (!cloudEnabled()) {
-      section.classList.add('hidden');
-      return;
-    }
+    if (!cloudEnabled()) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
     list.innerHTML = '<div class="emptyScores">Chargement…</div>';
     try {
       const globalScores = await fetchGlobalTopScores();
       if (!globalScores || globalScores.length === 0) {
-        list.innerHTML = `<div class="emptyScores">Aucun score global pour l’instant.</div>`;
+        list.innerHTML = `<div class="emptyScores">Aucun score global pour l'instant.</div>`;
         return;
       }
       list.innerHTML = '';
       globalScores.slice(0, 10).forEach((s, i) => {
-        const row = document.createElement('div');
+        const row     = document.createElement('div');
         row.className = 'scoreRow';
-
-        const rank = document.createElement('div');
-        rank.className = 'rank';
-        rank.textContent = String(i + 1);
-
-        const details = document.createElement('div');
+        const rank    = document.createElement('div');
+        rank.className    = 'rank';
+        rank.textContent  = String(i + 1);
+        const details     = document.createElement('div');
         details.className = 'details';
         const sc = document.createElement('div');
-        sc.className = 'sc';
+        sc.className   = 'sc';
         sc.textContent = `${s.pseudo || 'Anonyme'} — ${s.score} pts`;
         const rm = document.createElement('div');
-        rm.className = 'rm';
+        rm.className   = 'rm';
         rm.textContent = `Salle ${s.room} · ${s.difficulty || 'normal'}`;
         details.appendChild(sc);
         details.appendChild(rm);
-
         row.appendChild(rank);
         row.appendChild(details);
         list.appendChild(row);
@@ -761,23 +794,23 @@
     if (!list) return;
     list.innerHTML = '';
     for (const d of ['up', 'down', 'left', 'right']) {
-      const row = document.createElement('div');
-      row.className = 'bindingRow';
-      const label = document.createElement('span');
+      const row        = document.createElement('div');
+      row.className    = 'bindingRow';
+      const label      = document.createElement('span');
       label.textContent = BINDING_LABELS[d];
-      const keyDisplay = document.createElement('span');
-      keyDisplay.className = 'bindingKey';
-      keyDisplay.id = 'bindingKey_' + d;
+      const keyDisplay       = document.createElement('span');
+      keyDisplay.className   = 'bindingKey';
+      keyDisplay.id          = 'bindingKey_' + d;
       keyDisplay.textContent = displayKey(keyBindings[d]);
       const btn = document.createElement('button');
       btn.className = 'secondary hud-btn';
-      btn.id = 'bindingBtn_' + d;
+      btn.id        = 'bindingBtn_' + d;
       btn.style.cssText = 'padding:6px 14px; font-size:0.8rem;';
-      btn.textContent = 'Changer';
+      btn.textContent   = 'Changer';
       btn.addEventListener('click', () => {
         renderSettingsScreen();
-        capturingDir = d;
-        btn.textContent = '…';
+        capturingDir          = d;
+        btn.textContent       = '…';
         keyDisplay.textContent = '?';
       });
       row.appendChild(label);
@@ -790,7 +823,7 @@
   const DIFFICULTIES = {
     easy:   { label: '🟢 Facile',    speedMult: 1, scoreMult: 1, tickMs: 150 },
     normal: { label: '🟡 Normal',    speedMult: 2, scoreMult: 2, tickMs: 100 },
-    hard:   { label: '🔴 Difficile', speedMult: 3, scoreMult: 3, tickMs: 70 }
+    hard:   { label: '🔴 Difficile', speedMult: 3, scoreMult: 3, tickMs: 70  }
   };
   let selectedDifficulty = 'normal';
 
@@ -798,20 +831,30 @@
   // Game state
   // ============================================================
   let snake = [], dir = {x:1,y:0}, nextDir = {x:1,y:0}, food = [], obstacles = [], score = 0, room = 1, alive = false;
-  let isTicking = false;
-  let tickAccumulator = 0;
-  let lastFrameTime = null;
+  let isTicking         = false;
+  let tickAccumulator   = 0;
+  let lastFrameTime     = null;
   let waitingForFirstInput = true;
-  let activeMutations = [];
-  let shieldCharges = 0;
-  let particles = [];
-  let doubleFoodActive = false;
+  let activeMutations   = [];
+  let shieldCharges     = 0;
+  let particles         = [];
+  let doubleFoodActive  = false;
+
+  // M-01 : etat de pause
+  let paused = false;
+  // M-03 : compteur dedie pour la recharge du bouclier
+  let fruitsEatenSinceShield = 0;
+  // M-05 : contexte sauvegarde a la mort pour le formulaire de feedback
+  let lastRunContext = { room: 1, specialRoom: null };
+  // C-02 : horodatage du debut du run pour le calcul du temps ecoule
+  let runStartTime = 0;
 
   const MUTATION_POOL = [
     { id: 'speed', title: '⚡ Accélération', desc: 'Le serpent se déplace 15% plus vite en permanence.',
       apply: () => { baseTickMs = Math.max(60, baseTickMs * 0.85); } },
+    // M-03 : apply() remet fruitsEatenSinceShield a zero pour un comptage propre
     { id: 'shield', title: '🛡️ Bouclier', desc: 'Survis à 1 collision fatale (rechargeable en mangeant 5 fruits).',
-      apply: () => { shieldCharges += 1; } },
+      apply: () => { shieldCharges += 1; fruitsEatenSinceShield = 0; } },
     { id: 'phase', title: '👻 Traversée', desc: 'Traverse les bords de l\'arène (téléportation) au lieu de mourir.',
       apply: () => { wallsWrap = true; } },
     { id: 'doublefood', title: '🍎🍎 Double Fruit', desc: 'Deux fruits apparaissent en permanence sur le plateau.',
@@ -826,32 +869,32 @@
       apply: () => { obstacleDensity = Math.max(0.02, obstacleDensity * 0.6); } }
   ];
 
-  let baseTickMs = 150;
+  let baseTickMs        = 150;
   let difficultyScoreMult = 1;
-  let wallsWrap = false;
-  let shrinkMode = false;
-  let magnetActive = false;
-  let scoreMultiplier = 1;
-  let obstacleDensity = 0.05;
+  let wallsWrap         = false;
+  let shrinkMode        = false;
+  let magnetActive      = false;
+  let scoreMultiplier   = 1;
+  let obstacleDensity   = 0.05;
   let fruitsEatenThisRun = 0;
 
   // ============================================================
   // Special rooms (miroir / glace / volcan)
   // ============================================================
-  const SPECIAL_ROOM_START = 3;
+  const SPECIAL_ROOM_START  = 3;
   const SPECIAL_ROOM_CHANCE = 0.25;
-  const SPECIAL_ROOM_TYPES = ['mirror', 'ice', 'volcano'];
+  const SPECIAL_ROOM_TYPES  = ['mirror', 'ice', 'volcano'];
 
-  let currentSpecialRoom = null;
-  let iceCells = [];
-  let iceCellSet = new Set();
-  let slideQueue = 0;
-  let lavaCells = [];
-  let lavaCellMap = new Map();
-  let lavaCyclePositions = [];
-  let lavaCycleNextAt = null;
+  let currentSpecialRoom  = null;
+  let iceCells            = [];
+  let iceCellSet          = new Set();
+  let slideQueue          = 0;
+  let lavaCells           = [];
+  let lavaCellMap         = new Map();
+  let lavaCyclePositions  = [];
+  let lavaCycleNextAt     = null;
   function cellKey_(x, y) { return x + ',' + y; }
-  const LAVA_CYCLE_MS = 2500;
+  const LAVA_CYCLE_MS   = 2500;
   const LAVA_WARNING_MS = 900;
 
   function rollSpecialRoom() {
@@ -861,13 +904,13 @@
   }
 
   function clearSpecialRoomEffects() {
-    lavaCycleNextAt = null;
-    iceCells = [];
-    iceCellSet = new Set();
-    lavaCells = [];
-    lavaCellMap = new Map();
+    lavaCycleNextAt    = null;
+    iceCells           = [];
+    iceCellSet         = new Set();
+    lavaCells          = [];
+    lavaCellMap        = new Map();
     lavaCyclePositions = [];
-    slideQueue = 0;
+    slideQueue         = 0;
   }
 
   let lastRoomWasSpecial = false;
@@ -893,10 +936,10 @@
   }
 
   function generateIceCells() {
-    iceCells = [];
+    iceCells   = [];
     iceCellSet = new Set();
     const count = Math.floor(GRID * GRID * 0.06);
-    let tries = 0;
+    let tries   = 0;
     const headX = snake && snake[0] ? snake[0].x : 10;
     const headY = snake && snake[0] ? snake[0].y : 10;
     while (iceCells.length < count && tries < 400) {
@@ -914,8 +957,8 @@
 
   function generateLavaCyclePositions() {
     lavaCyclePositions = [];
-    const poolSize = Math.floor(GRID * GRID * 0.18);
-    let tries = 0;
+    const poolSize     = Math.floor(GRID * GRID * 0.18);
+    let tries          = 0;
     while (lavaCyclePositions.length < poolSize && tries < 900) {
       tries++;
       const x = Math.floor(Math.random() * GRID);
@@ -927,18 +970,17 @@
 
   function cycleLavaZones() {
     if (!alive || currentSpecialRoom !== 'volcano') return;
-    const headX = snake && snake[0] ? snake[0].x : 10;
-    const headY = snake && snake[0] ? snake[0].y : 10;
+    const headX       = snake && snake[0] ? snake[0].x : 10;
+    const headY       = snake && snake[0] ? snake[0].y : 10;
     const activeCount = Math.floor(GRID * GRID * 0.05);
-    const candidates = lavaCyclePositions.filter(c =>
+    const candidates  = lavaCyclePositions.filter(c =>
       !(Math.abs(c.x - headX) < 3 && Math.abs(c.y - headY) < 3) &&
       !obstacles.some(o => o.x === c.x && o.y === c.y) &&
       !food.some(f => f.x === c.x && f.y === c.y)
     );
-    const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+    const shuffled  = [...candidates].sort(() => Math.random() - 0.5);
     const nextActive = shuffled.slice(0, activeCount);
-
-    lavaCells = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
+    lavaCells   = nextActive.map(c => ({ x: c.x, y: c.y, armedAt: Date.now() + LAVA_WARNING_MS }));
     lavaCellMap = new Map(lavaCells.map(c => [cellKey_(c.x, c.y), c.armedAt]));
   }
 
@@ -951,35 +993,40 @@
     return iceCellSet.has(cellKey_(x, y));
   }
 
-  function resetRunState() {    
+  function resetRunState() {
     snake = [
       { x: 10, y: 10 },
-      { x: 9, y: 10 },
-      { x: 8, y: 10 }
+      { x: 9,  y: 10 },
+      { x: 8,  y: 10 }
     ];
-    dir = { x: 1, y: 0 };
-    nextDir = { x: 1, y: 0 };
-    obstacles = [];
-    score = 0;
-    room = 1;
-    alive = true;
-    activeMutations = [];
-    shieldCharges = 0;
-    const diff = DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal;
-    baseTickMs = diff.tickMs;
-    difficultyScoreMult = diff.scoreMult;
-    wallsWrap = false;
-    shrinkMode = false;
-    magnetActive = false;
-    scoreMultiplier = 1;
-    obstacleDensity = 0.05;
-    fruitsEatenThisRun = 0;
-    doubleFoodActive = false;
-    particles = [];
-    food = [];
+    dir                  = { x: 1, y: 0 };
+    nextDir              = { x: 1, y: 0 };
+    obstacles            = [];
+    score                = 0;
+    room                 = 1;
+    alive                = true;
+    activeMutations      = [];
+    shieldCharges        = 0;
+    const diff           = DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal;
+    baseTickMs           = diff.tickMs;
+    difficultyScoreMult  = diff.scoreMult;
+    wallsWrap            = false;
+    shrinkMode           = false;
+    magnetActive         = false;
+    scoreMultiplier      = 1;
+    obstacleDensity      = 0.05;
+    fruitsEatenThisRun   = 0;
+    doubleFoodActive     = false;
+    particles            = [];
+    food                 = [];
     waitingForFirstInput = true;
-    currentSpecialRoom = null;
-    lastRoomWasSpecial = false;
+    currentSpecialRoom   = null;
+    lastRoomWasSpecial   = false;
+    // Nouveaux champs
+    fruitsEatenSinceShield = 0;     // M-03
+    paused               = false;   // M-01
+    runStartTime         = Date.now(); // C-02
+    lastRunContext        = { room: 1, specialRoom: null }; // M-05
     playMusic('classic');
     clearSpecialRoomEffects();
     generateObstaclesForRoom();
@@ -992,8 +1039,8 @@
     if (x < 0 || y < 0 || x >= GRID || y >= GRID) return false;
     for (const s of snake) if (s.x === x && s.y === y) return false;
     for (const o of obstacles) if (o.x === x && o.y === y) return false;
-    for (const f of food) if (f.x === x && f.y === y) return false;
-    if (currentSpecialRoom === 'ice' && isIceCell(x, y)) return false;
+    for (const f of food)  if (f.x === x && f.y === y) return false;
+    if (currentSpecialRoom === 'ice'     && isIceCell(x, y))               return false;
     if (currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(x, y))) return false;
     return true;
   }
@@ -1001,10 +1048,10 @@
   function generateObstaclesForRoom() {
     obstacles = [];
     const roomFactor = room === 1 ? 0.5 : Math.min(1 + room * 0.15, 2.2);
-    const count = Math.floor(GRID * GRID * obstacleDensity * roomFactor);
-    let tries = 0;
-    const headX = snake && snake[0] ? snake[0].x : 10;
-    const headY = snake && snake[0] ? snake[0].y : 10;
+    const count      = Math.floor(GRID * GRID * obstacleDensity * roomFactor);
+    let tries        = 0;
+    const headX      = snake && snake[0] ? snake[0].x : 10;
+    const headY      = snake && snake[0] ? snake[0].y : 10;
     while (obstacles.length < count && tries < 800) {
       tries++;
       const x = Math.floor(Math.random() * GRID);
@@ -1025,8 +1072,8 @@
 
   function spawnFood() {
     const wanted = doubleFoodActive ? 2 : 1;
-    const headX = snake && snake[0] ? snake[0].x : 10;
-    const headY = snake && snake[0] ? snake[0].y : 10;
+    const headX  = snake && snake[0] ? snake[0].x : 10;
+    const headY  = snake && snake[0] ? snake[0].y : 10;
     while (food.length < wanted) {
       let tries = 0, x, y;
       let placed = false;
@@ -1051,13 +1098,13 @@
 
   function updateHud() {
     if (scoreVal) scoreVal.textContent = score;
-    if (roomVal) roomVal.textContent = room;
-    if (bestVal) bestVal.textContent = Math.max(save.best, score);
+    if (roomVal)  roomVal.textContent  = room;
+    if (bestVal)  bestVal.textContent  = Math.max(save.best, score);
     const diffLabel = document.getElementById('diffVal');
     if (diffLabel) diffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
 
     const specialBlock = document.getElementById('specialRoomHudBlock');
-    const specialVal = document.getElementById('specialRoomVal');
+    const specialVal   = document.getElementById('specialRoomVal');
     if (specialBlock && specialVal) {
       if (currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]) {
         specialVal.textContent = SPECIAL_ROOM_INFO[currentSpecialRoom].emoji + ' ' + SPECIAL_ROOM_INFO[currentSpecialRoom].label;
@@ -1085,16 +1132,16 @@
   // Input
   // ============================================================
   const DIRS = {
-    up: { x: 0, y: -1 },
-    down: { x: 0, y: 1 },
-    left: { x: -1, y: 0 },
-    right: { x: 1, y: 0 }
+    up:    { x: 0,  y: -1 },
+    down:  { x: 0,  y: 1  },
+    left:  { x: -1, y: 0  },
+    right: { x: 1,  y: 0  }
   };
 
   const MIRROR_MAP = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
   function setDir(d) {
-    if (!alive) return;
+    if (!alive || paused) return;  // M-01 : bloquer les inputs en pause
     const effectiveKey = currentSpecialRoom === 'mirror' ? MIRROR_MAP[d] : d;
     const nd = DIRS[effectiveKey];
     if (!nd) return;
@@ -1120,6 +1167,15 @@
       }
       capturingDir = null;
     }
+
+    // M-01 : Echap bascule la pause quand on est en jeu
+    if (e.key === 'Escape' && gameWrap && !gameWrap.classList.contains('hidden')) {
+      e.preventDefault();
+      if (paused)            resumeGame();
+      else if (alive && isTicking) pauseGame();
+      return;
+    }
+
     const ARROW_MAP = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
     let d = ARROW_MAP[e.key];
     if (!d) {
@@ -1146,7 +1202,7 @@
   // Bug #47 : Seuil de deplacement minimum (15px) pour le swipe
   canvas.addEventListener('touchend', (e) => {
     if (!touchStart) return;
-    const t = e.changedTouches[0];
+    const t  = e.changedTouches[0];
     const dx = t.clientX - touchStart.x;
     const dy = t.clientY - touchStart.y;
     const MIN_SWIPE = 15;
@@ -1175,9 +1231,9 @@
     let head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
     if (wallsWrap) {
-      if (head.x < 0) head.x = GRID - 1;
+      if (head.x < 0)     head.x = GRID - 1;
       if (head.x >= GRID) head.x = 0;
-      if (head.y < 0) head.y = GRID - 1;
+      if (head.y < 0)     head.y = GRID - 1;
       if (head.y >= GRID) head.y = 0;
     }
 
@@ -1222,6 +1278,8 @@
             if (ok) for (const o of obstacles) { if (o.x === nx && o.y === ny) { ok = false; break; } }
             if (ok) for (const g of food) { if (g !== f && g.x === nx && g.y === ny) { ok = false; break; } }
             if (ok && currentSpecialRoom === 'volcano' && lavaCellMap.has(cellKey_(nx, ny))) ok = false;
+            // H-03 : empecher l'aimant d'attirer la nourriture sur une case de glace (inaccessible)
+            if (ok && currentSpecialRoom === 'ice' && isIceCell(nx, ny)) ok = false;
             if (ok) { f.x = nx; f.y = ny; }
           }
         }
@@ -1251,8 +1309,12 @@
 
     if (ate) {
       spawnFood();
-      if (activeMutations.some(m => m.id === 'shield') && fruitsEatenThisRun % 5 === 0) {
-        shieldCharges = Math.min(shieldCharges + 1, 3);
+      // M-03 : compteur dedie independant de fruitsEatenThisRun
+      if (activeMutations.some(m => m.id === 'shield')) {
+        fruitsEatenSinceShield++;
+        if (fruitsEatenSinceShield % 5 === 0) {
+          shieldCharges = Math.min(shieldCharges + 1, 3);
+        }
       }
       if (fruitsEatenThisRun % 12 === 0) {
         advanceRoom();
@@ -1264,7 +1326,7 @@
   }
 
   function advanceRoom() {
-    lavaCycleNextAt = null;
+    lavaCycleNextAt    = null;
     room++;
     currentSpecialRoom = rollSpecialRoom();
     updateHud();
@@ -1277,8 +1339,8 @@
       return [...notTaken].sort(() => Math.random() - 0.5).slice(0, n);
     }
     const shuffledNotTaken = [...notTaken].sort(() => Math.random() - 0.5);
-    const takenPool = MUTATION_POOL.filter(m => activeMutations.find(a => a.id === m.id));
-    const shuffledTaken = [...takenPool].sort(() => Math.random() - 0.5);
+    const takenPool        = MUTATION_POOL.filter(m => activeMutations.find(a => a.id === m.id));
+    const shuffledTaken    = [...takenPool].sort(() => Math.random() - 0.5);
     return [...shuffledNotTaken, ...shuffledTaken].slice(0, n);
   }
 
@@ -1312,9 +1374,9 @@
     }
 
     choices.forEach(mut => {
-      const card = document.createElement('div');
-      card.className = 'mutCard';
-      card.innerHTML = `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`;
+      const card       = document.createElement('div');
+      card.className   = 'mutCard';
+      card.innerHTML   = `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`;
       card.addEventListener('click', () => {
         mut.apply();
         activeMutations.push(mut);
@@ -1337,36 +1399,44 @@
     if (!mutBar) return;
     mutBar.innerHTML = '';
     activeMutations.forEach(m => {
-      const chip = document.createElement('div');
-      chip.className = 'mutChip';
+      const chip       = document.createElement('div');
+      chip.className   = 'mutChip';
       chip.textContent = m.title;
       mutBar.appendChild(chip);
     });
   }
 
   function endRun() {
+    // M-05 : sauvegarder le contexte avant de modifier alive/room
+    lastRunContext = { room, specialRoom: currentSpecialRoom };
+
     stopMusic();
     alive = false;
+    // M-01 : fermer la pause si elle etait ouverte
+    paused = false;
+    if (pauseOverlay) pauseOverlay.classList.add('hidden');
     stopTicking();
     clearSpecialRoomEffects();
-    const metaGain = Math.max(1, Math.floor(score / 10) + room);
-    save.meta += metaGain;
-    const isRecord = score > save.best;
+
+    const metaGain  = Math.max(1, Math.floor(score / 10) + room);
+    save.meta      += metaGain;
+    const isRecord  = score > save.best;
     if (isRecord) save.best = score;
     addTopScore(score, room);
     writeSave(save);
-    submitScoreToCloud(score, room, metaGain, selectedDifficulty);
+    // C-02 : transmission du temps ecoule pour validation cote serveur
+    submitScoreToCloud(score, room, metaGain, selectedDifficulty, Date.now() - runStartTime);
     saveEclatsToCloud(save.meta);
 
-    const overScore = document.getElementById('overScore');
-    const overRoom = document.getElementById('overRoom');
-    const overMeta = document.getElementById('overMeta');
+    const overScore    = document.getElementById('overScore');
+    const overRoom     = document.getElementById('overRoom');
+    const overMeta     = document.getElementById('overMeta');
     const overDiffLabel = document.getElementById('overDiffLabel');
     const newRecordMsg = document.getElementById('newRecordMsg');
 
-    if (overScore) overScore.textContent = score;
-    if (overRoom) overRoom.textContent = room;
-    if (overMeta) overMeta.textContent = '+' + metaGain;
+    if (overScore)    overScore.textContent    = score;
+    if (overRoom)     overRoom.textContent     = room;
+    if (overMeta)     overMeta.textContent     = '+' + metaGain;
     if (overDiffLabel) overDiffLabel.textContent = (DIFFICULTIES[selectedDifficulty] || DIFFICULTIES.normal).label;
     if (newRecordMsg) newRecordMsg.classList.toggle('hidden', !isRecord);
     refreshTopHud();
@@ -1379,16 +1449,16 @@
   // Rendering
   // ============================================================
   function draw() {
-    const bgTheme = getEquippedBackground();
+    const bgTheme    = getEquippedBackground();
     const colorTheme = getEquippedColor();
-    const foodTheme = getEquippedFood();
-    const now = Date.now();
+    const foodTheme  = getEquippedFood();
+    const now        = Date.now();
 
     canvas.style.background = bgTheme.bg;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.strokeStyle = bgTheme.grid;
-    ctx.lineWidth = 1;
+    ctx.lineWidth   = 1;
     ctx.beginPath();
     for (let i = 0; i <= GRID; i++) {
       ctx.moveTo(i * CELL, 0);
@@ -1404,14 +1474,14 @@
       iceCells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
       ctx.fill();
       ctx.strokeStyle = 'rgba(200, 235, 255, 0.6)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth   = 1;
       ctx.beginPath();
       iceCells.forEach(c => ctx.rect(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4));
       ctx.stroke();
     }
     if (currentSpecialRoom === 'volcano' && lavaCells.length) {
-      const activeCells = [];
-      const blinkOnCells = [];
+      const activeCells   = [];
+      const blinkOnCells  = [];
       const blinkOffCells = [];
       const blink = Math.floor(now / 150) % 2 === 0;
       lavaCells.forEach(c => {
@@ -1425,8 +1495,8 @@
         cells.forEach(c => addRoundRectPath(c.x * CELL + 2, c.y * CELL + 2, CELL - 4, CELL - 4, 5));
         ctx.fill();
       };
-      fillGroup(activeCells, '#ff4a2f');
-      fillGroup(blinkOnCells, 'rgba(255, 150, 60, 0.55)');
+      fillGroup(activeCells,   '#ff4a2f');
+      fillGroup(blinkOnCells,  'rgba(255, 150, 60, 0.55)');
       fillGroup(blinkOffCells, 'rgba(255, 90, 40, 0.3)');
     }
 
@@ -1447,12 +1517,12 @@
         ctx.arc(cx, cy, CELL / 2.6, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#fff8d6';
-        ctx.lineWidth = 2;
+        ctx.lineWidth   = 2;
         ctx.stroke();
       } else if (foodTheme.emoji) {
         if (!foodFontSet) {
-          ctx.font = `${Math.floor(CELL * 0.85)}px sans-serif`;
-          ctx.textAlign = 'center';
+          ctx.font         = `${Math.floor(CELL * 0.85)}px sans-serif`;
+          ctx.textAlign    = 'center';
           ctx.textBaseline = 'middle';
           foodFontSet = true;
         }
@@ -1465,7 +1535,7 @@
       }
     });
     if (foodFontSet) {
-      ctx.textAlign = 'left';
+      ctx.textAlign    = 'left';
       ctx.textBaseline = 'alphabetic';
     }
 
@@ -1498,7 +1568,7 @@
 
     if (shieldCharges > 0 && snake[0]) {
       ctx.strokeStyle = '#ffd93d';
-      ctx.lineWidth = 2;
+      ctx.lineWidth   = 2;
       const cx = snake[0].x * CELL + CELL / 2;
       const cy = snake[0].y * CELL + CELL / 2;
       ctx.beginPath();
@@ -1509,7 +1579,7 @@
     if (particles.length) {
       particles.forEach(p => {
         ctx.globalAlpha = Math.max(0, p.life / 20);
-        ctx.fillStyle = p.color;
+        ctx.fillStyle   = p.color;
         ctx.beginPath();
         ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
         ctx.fill();
@@ -1521,7 +1591,7 @@
       ctx.fillStyle = 'rgba(10,10,20,0.55)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#f5f5f5';
-      ctx.font = `${Math.floor(CELL * 0.9)}px Segoe UI, sans-serif`;
+      ctx.font      = `${Math.floor(CELL * 0.9)}px Segoe UI, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillText('▶', canvas.width / 2, canvas.height / 2 - 10);
       ctx.font = `${Math.floor(CELL * 0.5)}px Segoe UI, sans-serif`;
@@ -1532,10 +1602,10 @@
 
   function addRoundRectPath(x, y, w, h, r) {
     ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
     ctx.closePath();
   }
 
@@ -1582,13 +1652,31 @@
   }
 
   function startTicking() {
-    isTicking = true;
+    isTicking       = true;
     tickAccumulator = 0;
-    lastFrameTime = null;
+    lastFrameTime   = null;
   }
 
   function stopTicking() {
     isTicking = false;
+  }
+
+  // ============================================================
+  // M-01 : Pause / Reprise
+  // ============================================================
+  function pauseGame() {
+    // On ne peut mettre en pause que si le jeu tourne activement
+    if (!alive || paused || !isTicking) return;
+    paused = true;
+    stopTicking();
+    if (pauseOverlay) pauseOverlay.classList.remove('hidden');
+  }
+
+  function resumeGame() {
+    if (!paused) return;
+    paused = false;
+    if (pauseOverlay) pauseOverlay.classList.add('hidden');
+    startTicking(); // remet tickAccumulator a 0 pour eviter un burst
   }
 
   // ============================================================
@@ -1613,18 +1701,18 @@
     });
   }
 
-  const pseudoInputEl = document.getElementById('pseudoInput');
+  const pseudoInputEl  = document.getElementById('pseudoInput');
   const pseudoStatusEl = document.getElementById('pseudoStatus');
 
   function refreshPseudoLockUI() {
     if (!pseudoInputEl) return;
     if (isPseudoLocked()) {
-      pseudoInputEl.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      pseudoInputEl.value    = localStorage.getItem('serpentMutant_pseudo') || '';
       pseudoInputEl.disabled = true;
       if (pseudoStatusEl) pseudoStatusEl.textContent = '🔒 Pseudo verrouillé définitivement';
     } else {
       pseudoInputEl.disabled = false;
-      pseudoInputEl.value = localStorage.getItem('serpentMutant_pseudo') || '';
+      pseudoInputEl.value    = localStorage.getItem('serpentMutant_pseudo') || '';
       if (pseudoStatusEl) pseudoStatusEl.textContent = '';
     }
   }
@@ -1636,7 +1724,7 @@
       if (isPseudoLocked()) return;
       const val = e.target.value.trim();
       if (val) localStorage.setItem('serpentMutant_pseudo', val);
-      else localStorage.removeItem('serpentMutant_pseudo');
+      else     localStorage.removeItem('serpentMutant_pseudo');
 
       if (!pseudoStatusEl) return;
       clearTimeout(pseudoCheckTimer);
@@ -1700,8 +1788,26 @@
     showScreen('menu');
   });
 
+  // M-01 : btnMenuFromGame bascule entre pause et reprise
   if (btnMenuFromGame) {
     btnMenuFromGame.addEventListener('click', () => {
+      if (paused) {
+        resumeGame();
+      } else if (alive && isTicking) {
+        pauseGame();
+      }
+    });
+  }
+
+  // M-01 : boutons de l'overlay pause
+  const btnResume = document.getElementById('btnResume');
+  if (btnResume) btnResume.addEventListener('click', resumeGame);
+
+  const btnQuitRun = document.getElementById('btnQuitRun');
+  if (btnQuitRun) {
+    btnQuitRun.addEventListener('click', () => {
+      paused = false;
+      if (pauseOverlay) pauseOverlay.classList.add('hidden');
       stopTicking();
       alive = false;
       stopMusic();
@@ -1713,24 +1819,24 @@
   // ============================================================
   // Feedback (Bugs/Suggestions)
   // ============================================================
-  let currentFeedbackTab = 'bug';
-  const feedbackBugFields = document.getElementById('feedbackBugFields');
+  let currentFeedbackTab    = 'bug';
+  const feedbackBugFields   = document.getElementById('feedbackBugFields');
   const feedbackContextInput = document.getElementById('feedbackContextInput');
   const feedbackMessageInput = document.getElementById('feedbackMessageInput');
   const feedbackMessageLabel = document.getElementById('feedbackMessageLabel');
-  const feedbackStatusEl = document.getElementById('feedbackStatus');
-  const btnSubmitFeedback = document.getElementById('btnSubmitFeedback');
+  const feedbackStatusEl    = document.getElementById('feedbackStatus');
+  const btnSubmitFeedback   = document.getElementById('btnSubmitFeedback');
 
   function renderFeedbackTabUI() {
     document.querySelectorAll('[data-feedback-tab]').forEach(t => {
       t.classList.toggle('active', t.dataset.feedbackTab === currentFeedbackTab);
     });
     if (currentFeedbackTab === 'bug') {
-      if (feedbackBugFields) feedbackBugFields.classList.remove('hidden');
+      if (feedbackBugFields)   feedbackBugFields.classList.remove('hidden');
       if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Décris le problème';
       if (feedbackMessageInput) feedbackMessageInput.placeholder = "Explique ce qui s'est passé...";
     } else {
-      if (feedbackBugFields) feedbackBugFields.classList.add('hidden');
+      if (feedbackBugFields)   feedbackBugFields.classList.add('hidden');
       if (feedbackMessageLabel) feedbackMessageLabel.textContent = 'Ton idée';
       if (feedbackMessageInput) feedbackMessageInput.placeholder = "Qu'est-ce qu'on pourrait ajouter ou améliorer ?";
     }
@@ -1743,16 +1849,24 @@
     });
   });
 
+  // M-05 : utilise lastRunContext quand alive = false pour afficher le contexte reel
   function openFeedbackScreen() {
     currentFeedbackTab = 'bug';
     if (feedbackMessageInput) feedbackMessageInput.value = '';
-    if (feedbackStatusEl) feedbackStatusEl.textContent = '';
+    if (feedbackStatusEl)     feedbackStatusEl.textContent = '';
     if (feedbackContextInput) {
       if (alive) {
+        // En cours de jeu (feedback depuis le jeu — cas peu probable mais possible)
         const specialLabel = currentSpecialRoom && SPECIAL_ROOM_INFO[currentSpecialRoom]
           ? ' (' + SPECIAL_ROOM_INFO[currentSpecialRoom].label + ')'
           : '';
         feedbackContextInput.value = 'Salle ' + room + specialLabel;
+      } else if (lastRunContext.room > 1 || lastRunContext.specialRoom) {
+        // M-05 : post-mortem — utiliser le contexte du dernier run
+        const specialLabel = lastRunContext.specialRoom && SPECIAL_ROOM_INFO[lastRunContext.specialRoom]
+          ? ' (' + SPECIAL_ROOM_INFO[lastRunContext.specialRoom].label + ')'
+          : '';
+        feedbackContextInput.value = 'Salle ' + lastRunContext.room + specialLabel + ' (post-mortem)';
       } else {
         feedbackContextInput.value = 'Menu';
       }
@@ -1780,11 +1894,11 @@
     if (!list) return;
     list.innerHTML = '';
     MUTATION_POOL.forEach(mut => {
-      const known = save.discoveredMutations.includes(mut.id);
-      const card = document.createElement('div');
-      card.className = 'mutCard';
+      const known      = save.discoveredMutations.includes(mut.id);
+      const card       = document.createElement('div');
+      card.className   = 'mutCard';
       card.style.cursor = 'default';
-      card.innerHTML = known
+      card.innerHTML   = known
         ? `<div class="mTitle">${mut.title}</div><div class="mDesc">${mut.desc}</div>`
         : `<div class="mTitle" style="color:#555">❓ ????</div><div class="mDesc" style="color:#444">Mutation inconnue. Joue pour la découvrir.</div>`;
       list.appendChild(card);
@@ -1815,7 +1929,7 @@
       }
 
       const context = (currentFeedbackTab === 'bug' && feedbackContextInput) ? feedbackContextInput.value.trim() : '';
-      const result = await submitFeedbackToCloud(currentFeedbackTab, context, message);
+      const result  = await submitFeedbackToCloud(currentFeedbackTab, context, message);
 
       btnSubmitFeedback.disabled = false;
       if (result.ok) {
@@ -1840,4 +1954,8 @@
 
   showScreen('menu');
   requestAnimationFrame(renderLoop);
+
+  // C-03 : Synchronisation des eclats depuis le cloud au demarrage
+  syncEclatsFromCloud();
+
 })();
