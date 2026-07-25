@@ -1,12 +1,12 @@
 <!--
 ============================================================
 Fichier      : index.html
-Version      : V1.03
-Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
-               #41 : ajout du bouton #btnStart manquant dans #menuOverlay.
-               #48 : reconstruction et completion integrale du fichier HTML
-               avec tous les overlays, boutons, HUD, canvas et conteneurs
-               requis par game.js.)
+Version      : V1.04
+Derniere maj : 24/07/2026 (correction red-team M-01 :
+               M-01 : ajout de #pauseOverlay avec boutons #btnResume et
+               #btnQuitRun pour le vrai mode pause sans tuer le run.)
+— Historique precedent :
+  V1.03 / 23/07/2026 - bugs #41 & #48 corriges
 ============================================================
 -->
 <!DOCTYPE html>
@@ -159,6 +159,18 @@ Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
     </div>
   </div>
 
+  <!-- M-01 : Overlay de pause — ne tue pas le run -->
+  <div id="pauseOverlay" class="overlayBase hidden">
+    <div class="panel">
+      <h2>⏸ Pause</h2>
+      <p>Le run est en pause. Ton score et tes mutations sont conservés.</p>
+      <div class="menuButtons">
+        <button id="btnResume" class="primary">▶ Reprendre</button>
+        <button id="btnQuitRun" class="secondary">🏠 Quitter le run</button>
+      </div>
+    </div>
+  </div>
+
   <div id="hud" class="hidden">
     <div class="hud-block">
       <span class="hud-label">Score</span>
@@ -181,7 +193,7 @@ Derniere maj : 23/07/2026 (audit du 23/07/2026 - bug #41 & #48 corriges :
 
   <div id="gameWrap" class="hidden">
     <div class="gameHeaderControls">
-      <button id="btnMenuFromGame" class="secondary hud-btn">🏠 Pause / Menu</button>
+      <button id="btnMenuFromGame" class="secondary hud-btn">⏸ Pause</button>
       <button id="btnMuteGame" class="secondary hud-btn">🔊</button>
     </div>
     <canvas id="game"></canvas>
